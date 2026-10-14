@@ -1,5 +1,9 @@
 <Solution>
   <Project Path="Usterki.Api/Usterki.Api.csproj" />
   <Project Path="Usterki.Contracts/Usterki.Contracts.csproj" />
-  <Project Path="Usterki.Mobile/Usterki.Mobile.csproj" />
+  <Project Path="Usterki.Domain/Usterki.Domain.csproj" />
+  <Project Path="Usterki.Infrastructure/Usterki.Infrastructure.csproj" />
+  <Project Path="Usterki.Mobile/Usterki.Mobile.csproj">
+    <Deploy Solution="Debug|*" />
+  </Project>
 </Solution>
