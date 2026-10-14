@@ -1,20 +1,41 @@
+using Microsoft.EntityFrameworkCore;
+using Usterki.Infrastructure.Persistence;
+
 var builder = WebApplication.CreateBuilder(args);
 
-// Add services to the container.
-
 builder.Services.AddControllers();
-// Learn more about configuring OpenAPI at https://aka.ms/aspnet/openapi
 builder.Services.AddOpenApi();
+builder.Services.AddAuthorization();
+
+var connectionString =
+    builder.Configuration.GetConnectionString("DefaultConnection")
+    ?? throw new InvalidOperationException(
+        "Brak ConnectionStrings:DefaultConnection w konfiguracji.");
+
+builder.Services.AddDbContext<AppDbContext>(options =>
+    options.UseNpgsql(connectionString));
 
 var app = builder.Build();
 
-// Configure the HTTP request pipeline.
+app.UseHttpsRedirection();
+
 if (app.Environment.IsDevelopment())
 {
     app.MapOpenApi();
-}
 
-app.UseHttpsRedirection();
+    app.MapGet("/api/health/database", async (
+        AppDbContext db,
+        CancellationToken cancellationToken) =>
+    {
+        var canConnect =
+            await db.Database.CanConnectAsync(cancellationToken);
+
+        return canConnect
+            ? Results.Ok(new { status = "ok" })
+            : Results.StatusCode(
+                StatusCodes.Status503ServiceUnavailable);
+    });
+}
 
 app.UseAuthorization();
 

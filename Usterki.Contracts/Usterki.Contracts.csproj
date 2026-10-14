@@ -8,7 +8,6 @@
 
   <ItemGroup>
     <ProjectReference Include="..\Usterki.Api\Usterki.Api.csproj" />
-    <ProjectReference Include="..\Usterki.Mobile\Usterki.Mobile.csproj" />
   </ItemGroup>
 
 </Project>
