@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="Usterki.Api/Usterki.Api.csproj" />
+  <Project Path="Usterki.Contracts/Usterki.Contracts.csproj" />
+  <Project Path="Usterki.Mobile/Usterki.Mobile.csproj" />
+</Solution>
