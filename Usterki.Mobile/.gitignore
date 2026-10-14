@@ -9,3 +9,12 @@ obj/
 
 # OS-generated files
 .DS_Store
+
+TestResults/
+coverage/
+
+.env
+.env.*
+!.env.example
+
+logs/
