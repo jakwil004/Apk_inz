@@ -1,0 +1,7 @@
+# Use this workspace to collaborate
+workspace:
+  id: 0f1e23c2-2f3d-44e1-8c54-557117cc6592
+
+localResources:
+  specs:
+    - ../Usterki.Api/obj/Debug/net10.0/EndpointInfo/Usterki.Api.json

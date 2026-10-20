@@ -20,6 +20,8 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
     public DbSet<Building> Buildings => Set<Building>();
     public DbSet<Unit> Units => Set<Unit>();
     public DbSet<OrganizationMembership> OrganizationMemberships => Set<OrganizationMembership>();
+    public DbSet<UserSession> UserSessions => Set<UserSession>();
+    public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -138,6 +140,39 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
                 .WithMany(x => x.Units)
                 .HasForeignKey(x => x.BuildingId)
                 .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<UserSession>(entity =>
+        {
+            entity.ToTable("UserSessions");
+
+            entity.HasKey(x => x.Id);
+
+            entity.HasIndex(x => x.UserId);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<RefreshToken>(entity =>
+        {
+            entity.ToTable("RefreshTokens");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.TokenHash)
+                .HasMaxLength(64)
+                .IsRequired();
+
+            entity.HasIndex(x => x.TokenHash)
+                .IsUnique();
+
+            entity.HasOne(x => x.Session)
+                .WithMany(x => x.RefreshTokens)
+                .HasForeignKey(x => x.SessionId)
+                .OnDelete(DeleteBehavior.Cascade);
         });
     }
 }

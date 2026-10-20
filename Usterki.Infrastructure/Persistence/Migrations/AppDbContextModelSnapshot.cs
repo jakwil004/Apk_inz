@@ -172,6 +172,39 @@ namespace Usterki.Infrastructure.Persistence.Migrations
                     b.ToTable("OrganizationMemberships", (string)null);
                 });
 
+            modelBuilder.Entity("Usterki.Domain.Entities.RefreshToken", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("SessionId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("TokenHash")
+                        .IsRequired()
+                        .HasMaxLength(64)
+                        .HasColumnType("character varying(64)");
+
+                    b.Property<DateTime?>("UsedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("SessionId");
+
+                    b.HasIndex("TokenHash")
+                        .IsUnique();
+
+                    b.ToTable("RefreshTokens", (string)null);
+                });
+
             modelBuilder.Entity("Usterki.Domain.Entities.Unit", b =>
                 {
                     b.Property<Guid>("Id")
@@ -195,6 +228,31 @@ namespace Usterki.Infrastructure.Persistence.Migrations
                         .IsUnique();
 
                     b.ToTable("Units", (string)null);
+                });
+
+            modelBuilder.Entity("Usterki.Domain.Entities.UserSession", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("CreatedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime>("ExpiresAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<DateTime?>("RevokedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("UserId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("UserId");
+
+                    b.ToTable("UserSessions", (string)null);
                 });
 
             modelBuilder.Entity("Usterki.Infrastructure.Identity.ApplicationUser", b =>
@@ -334,6 +392,17 @@ namespace Usterki.Infrastructure.Persistence.Migrations
                     b.Navigation("Organization");
                 });
 
+            modelBuilder.Entity("Usterki.Domain.Entities.RefreshToken", b =>
+                {
+                    b.HasOne("Usterki.Domain.Entities.UserSession", "Session")
+                        .WithMany("RefreshTokens")
+                        .HasForeignKey("SessionId")
+                        .OnDelete(DeleteBehavior.Cascade)
+                        .IsRequired();
+
+                    b.Navigation("Session");
+                });
+
             modelBuilder.Entity("Usterki.Domain.Entities.Unit", b =>
                 {
                     b.HasOne("Usterki.Domain.Entities.Building", "Building")
@@ -343,6 +412,15 @@ namespace Usterki.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Building");
+                });
+
+            modelBuilder.Entity("Usterki.Domain.Entities.UserSession", b =>
+                {
+                    b.HasOne("Usterki.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("UserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
                 });
 
             modelBuilder.Entity("Usterki.Domain.Entities.Building", b =>
@@ -355,6 +433,11 @@ namespace Usterki.Infrastructure.Persistence.Migrations
                     b.Navigation("Buildings");
 
                     b.Navigation("Memberships");
+                });
+
+            modelBuilder.Entity("Usterki.Domain.Entities.UserSession", b =>
+                {
+                    b.Navigation("RefreshTokens");
                 });
 #pragma warning restore 612, 618
         }
