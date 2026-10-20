@@ -4,10 +4,12 @@ using System.Text;
 
 using Microsoft.EntityFrameworkCore;
 using Usterki.Domain.Entities;
+using Microsoft.AspNetCore.Identity.EntityFrameworkCore;
+using Usterki.Infrastructure.Identity;
 
 namespace Usterki.Infrastructure.Persistence;
 
-public class AppDbContext : DbContext
+public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
 {
     public AppDbContext(DbContextOptions<AppDbContext> options)
         : base(options)
@@ -17,10 +19,61 @@ public class AppDbContext : DbContext
     public DbSet<Organization> Organizations => Set<Organization>();
     public DbSet<Building> Buildings => Set<Building>();
     public DbSet<Unit> Units => Set<Unit>();
+    public DbSet<OrganizationMembership> OrganizationMemberships => Set<OrganizationMembership>();
 
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
+
+        modelBuilder.Entity<ApplicationUser>(entity =>
+        {
+            entity.Property(x => x.FirstName)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            entity.Property(x => x.LastName)
+                .HasMaxLength(100)
+                .IsRequired();
+
+            entity.Property(x => x.CreatedAtUtc)
+                .IsRequired();
+
+            entity.HasIndex(x => x.NormalizedEmail)
+                .HasDatabaseName("EmailIndex")
+                .IsUnique();
+        });
+
+        modelBuilder.Entity<OrganizationMembership>(entity =>
+        {
+            entity.ToTable("OrganizationMemberships");
+
+            entity.HasKey(x => new
+            {
+                x.OrganizationId,
+                x.UserId
+            });
+
+            entity.Property(x => x.Role)
+                .HasConversion<string>()
+                .HasMaxLength(30)
+                .IsRequired();
+
+            entity.Property(x => x.JoinedAtUtc)
+                .IsRequired();
+
+            entity.HasOne(x => x.Organization)
+                .WithMany(x => x.Memberships)
+                .HasForeignKey(x => x.OrganizationId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(x => x.UserId);
+        });
 
         modelBuilder.Entity<Organization>(entity =>
         {

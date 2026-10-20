@@ -12,6 +12,7 @@ public class Organization
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
 
-    public ICollection<Building> Buildings { get; set; }
-        = new List<Building>();
+    public ICollection<Building> Buildings { get; set; } = new List<Building>();
+    public ICollection<OrganizationMembership> Memberships { get; set; } = new List<OrganizationMembership>();
 }
+

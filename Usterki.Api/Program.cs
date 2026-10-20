@@ -1,5 +1,6 @@
 using Microsoft.EntityFrameworkCore;
 using Usterki.Infrastructure.Persistence;
+using Usterki.Infrastructure.Identity;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -14,6 +15,25 @@ var connectionString =
 
 builder.Services.AddDbContext<AppDbContext>(options =>
     options.UseNpgsql(connectionString));
+
+builder.Services
+    .AddIdentityCore<ApplicationUser>(options =>
+    {
+        options.User.RequireUniqueEmail = true;
+
+        options.Password.RequiredLength = 12;
+        options.Password.RequiredUniqueChars = 4;
+        options.Password.RequireDigit = true;
+        options.Password.RequireLowercase = true;
+        options.Password.RequireUppercase = true;
+        options.Password.RequireNonAlphanumeric = false;
+
+        options.Lockout.AllowedForNewUsers = true;
+        options.Lockout.MaxFailedAccessAttempts = 5;
+        options.Lockout.DefaultLockoutTimeSpan =
+            TimeSpan.FromMinutes(15);
+    })
+    .AddEntityFrameworkStores<AppDbContext>();
 
 var app = builder.Build();
 
