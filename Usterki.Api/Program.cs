@@ -8,6 +8,8 @@ using Microsoft.IdentityModel.Tokens;
 using Usterki.Api.Auth;
 using Usterki.Infrastructure.Identity;
 using Usterki.Infrastructure.Persistence;
+using Usterki.Api.Authorization;
+using Usterki.Domain.Enums;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -163,6 +165,18 @@ builder.Services.AddAuthorization(options =>
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
         .RequireAuthenticatedUser()
         .Build();
+
+    options.AddPolicy(
+        AuthorizationPolicies.ManageProperties,
+        policy =>
+        {
+            policy.RequireAuthenticatedUser();
+
+            policy.AddRequirements(
+                new OrganizationRoleRequirement(
+                    OrganizationRole.Owner,
+                    OrganizationRole.Manager));
+        });
 });
 
 //Wspólny limit dla rejestracji i logowania w tej instancji API.
@@ -179,6 +193,10 @@ builder.Services.AddRateLimiter(options =>
         limiter.AutoReplenishment = true;
     });
 });
+
+builder.Services.AddScoped<
+    IAuthorizationHandler,
+    OrganizationRoleHandler>();
 
 var app = builder.Build();
 
