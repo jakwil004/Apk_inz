@@ -159,7 +159,7 @@ builder.Services
         };
     });
 
-//Wszystkie endpointy wymagają logowania,
+//Wszystkie endpointy wymagają logowania
 builder.Services.AddAuthorization(options =>
 {
     options.FallbackPolicy = new AuthorizationPolicyBuilder()
@@ -177,9 +177,20 @@ builder.Services.AddAuthorization(options =>
                     OrganizationRole.Owner,
                     OrganizationRole.Manager));
         });
+    options.AddPolicy(
+    AuthorizationPolicies.ManageTickets,
+    policy =>
+    {
+        policy.RequireAuthenticatedUser();
+
+        policy.AddRequirements(
+            new OrganizationRoleRequirement(
+                OrganizationRole.Owner,
+                OrganizationRole.Manager));
+    });
 });
 
-//Wspólny limit dla rejestracji i logowania w tej instancji API.
+//Wspólny limit dla rejestracji i logowania w tej instancji API
 builder.Services.AddRateLimiter(options =>
 {
     options.RejectionStatusCode =

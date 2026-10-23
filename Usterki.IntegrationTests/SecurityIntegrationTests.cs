@@ -14,6 +14,8 @@ using Usterki.Infrastructure.Persistence;
 using Usterki.IntegrationTests.Infrastructure;
 using Xunit;
 using Usterki.Contracts.Residents;
+using Usterki.Contracts.Tickets;
+using Usterki.Domain.Entities;
 
 namespace Usterki.IntegrationTests;
 
@@ -35,6 +37,82 @@ public sealed class SecurityIntegrationTests : IDisposable
                 BaseAddress = new Uri("https://localhost"),
                 AllowAutoRedirect = false
             });
+    }
+    private async Task<TicketResponse> CreateTicketForAsync(
+    TestOwner resident,
+    Guid unitId)
+    {
+        UseToken(resident.Auth.AccessToken);
+
+        var response = await _client.PostAsJsonAsync(
+            $"/api/units/{unitId}/tickets",
+            ValidTicketRequest());
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        return await ReadAsync<TicketResponse>(response);
+    }
+
+    private async Task<(
+    TestOwner Owner,
+    TestOwner Resident,
+    BuildingResponse Building,
+    UnitResponse Unit)> CreateTicketScenarioAsync()
+    {
+        var owner = await RegisterAndLoginAsync();
+        var resident = await RegisterAndLoginAsync();
+
+        var building = await CreateBuildingAsync(owner);
+
+        var response = await _client.PostAsJsonAsync(
+            $"{BuildingsUrl(owner.OrganizationId)}/{building.Id}/units",
+            new CreateUnitRequest
+            {
+                Number = "1",
+                Floor = 1
+            });
+
+
+
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
+
+        var unit = await ReadAsync<UnitResponse>(response);
+
+        using var scope = _factory.Services.CreateScope();
+
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
+        db.OrganizationMemberships.Add(new OrganizationMembership
+        {
+            OrganizationId = owner.OrganizationId,
+            UserId = resident.UserId,
+            Role = OrganizationRole.Resident,
+            IsActive = true
+        });
+
+        db.UnitResidents.Add(new UnitResident
+        {
+            UnitId = unit.Id,
+            UserId = resident.UserId,
+            IsActive = true
+        });
+
+        await db.SaveChangesAsync();
+
+        return (owner, resident, building, unit);
+    }
+
+    private static CreateTicketRequest ValidTicketRequest()
+    {
+        return new CreateTicketRequest
+        {
+            Title = "Testowe zgłoszenie",
+            Description = "Testowa treść zgłoszenia",
+            LocationDetails = "Łazienka",
+            Category = "Plumbing"
+        };
     }
 
     [Fact]
@@ -68,6 +146,378 @@ public sealed class SecurityIntegrationTests : IDisposable
             BuildingsUrl(owner.OrganizationId));
 
         Assert.Equal(expectedStatus, response.StatusCode);
+    }
+    [Fact]
+    public async Task Resident_CannotCreateTicketForUnassignedUnit()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var secondUnitResponse = await _client.PostAsJsonAsync(
+            $"{BuildingsUrl(scenario.Owner.OrganizationId)}" +
+            $"/{scenario.Building.Id}/units",
+            new CreateUnitRequest
+            {
+                Number = "2",
+                Floor = 1
+            });
+
+        Assert.Equal(
+            HttpStatusCode.Created,
+            secondUnitResponse.StatusCode);
+
+        var secondUnit = await ReadAsync<UnitResponse>(secondUnitResponse);
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        var response = await _client.PostAsJsonAsync(
+            $"/api/units/{secondUnit.Id}/tickets",
+            ValidTicketRequest());
+
+        Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
+        var exists = await db.Tickets.AnyAsync(
+            ticket => ticket.UnitId == secondUnit.Id);
+
+        Assert.False(exists);
+    }
+    [Fact]
+    public async Task StatusChange_AddsHistory_AndRejectsStaleVersion()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var url =
+            $"/api/organizations/{scenario.Owner.OrganizationId}" +
+            $"/tickets/{ticket.Id}/status";
+
+        var changed = await _client.PatchAsJsonAsync(
+            url,
+            new ChangeTicketStatusRequest
+            {
+                Status = "InProgress",
+                Reason = "Rozpoczęcie pracy.",
+                ExpectedVersion = ticket.Version
+            });
+
+        Assert.Equal(HttpStatusCode.OK, changed.StatusCode);
+
+        var updated = await ReadAsync<TicketResponse>(changed);
+
+        Assert.Equal("InProgress", updated.Status);
+        Assert.Equal(ticket.Version + 1, updated.Version);
+        //próba zmiany statusu ze starej wersji
+        var staleChange = await _client.PatchAsJsonAsync(
+            url,
+            new ChangeTicketStatusRequest
+            {
+                Status = "Resolved",
+                Reason = "Próba zapisu ze starego widoku.",
+                ExpectedVersion = ticket.Version
+            });
+
+        Assert.Equal(HttpStatusCode.Conflict, staleChange.StatusCode);
+
+        var historyResponse = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}/status-history");
+
+        Assert.Equal(HttpStatusCode.OK, historyResponse.StatusCode);
+
+        var history =
+            await ReadAsync<PagedResponse<TicketStatusHistoryResponse>>(
+                historyResponse);
+        //sprawdzamy czy historia zawiera wpisy o zmianach statusu
+        Assert.Equal(2, history.TotalCount);
+
+        Assert.Contains(history.Items, item =>
+            item.FromStatus == null &&
+            item.ToStatus == "New");
+
+        Assert.Contains(history.Items, item =>
+            item.FromStatus == "New" &&
+            item.ToStatus == "InProgress" &&
+            item.ChangedByUserId == scenario.Owner.UserId);
+
+        var detailsResponse = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, detailsResponse.StatusCode);
+
+        var details = await ReadAsync<TicketResponse>(detailsResponse);
+
+        Assert.Equal("InProgress", details.Status);
+        Assert.Equal(updated.Version, details.Version);
+    }
+    [Fact]
+    public async Task StatusChange_EnforcesRoleAndAllowedTransitions()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        var url =
+            $"/api/organizations/{scenario.Owner.OrganizationId}" +
+            $"/tickets/{ticket.Id}/status";
+        //próba zmiany statusu przez mieszkańca
+        var residentChange = await _client.PatchAsJsonAsync(
+            url,
+            new ChangeTicketStatusRequest
+            {
+                Status = "InProgress",
+                Reason = "Próba mieszkańca.",
+                ExpectedVersion = ticket.Version
+            });
+
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            residentChange.StatusCode);
+        
+        UseToken(scenario.Owner.Auth.AccessToken);
+        //próba zmiany statusu z New do Closed pomijając InProgress i Resolved
+        var invalidTransition = await _client.PatchAsJsonAsync(
+            url,
+            new ChangeTicketStatusRequest
+            {
+                Status = "Closed",
+                Reason = "Niedozwolone pominięcie realizacji.",
+                ExpectedVersion = ticket.Version
+            });
+        //sprawdzenie czy niedozwolona zmiana statusu nie zmienia wersji encji
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            invalidTransition.StatusCode);
+
+        var detailsResponse = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, detailsResponse.StatusCode);
+
+        var details = await ReadAsync<TicketResponse>(detailsResponse);
+
+        Assert.Equal("New", details.Status);
+        Assert.Equal(ticket.Version, details.Version);
+    }
+    [Fact]
+    public async Task Comments_AreSharedWithOwner_ButHiddenFromOtherUsers()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+        var outsider = await RegisterAndLoginAsync();
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        var url = $"/api/tickets/{ticket.Id}/comments";
+
+        var residentComment = await _client.PostAsJsonAsync(
+            url,
+            new CreateTicketCommentRequest
+            {
+                Content = "Jestem dostępny po godzinie 16."
+            });
+
+        Assert.Equal(
+            HttpStatusCode.Created,
+            residentComment.StatusCode);
+
+        var residentResult =
+            await ReadAsync<TicketCommentResponse>(residentComment);
+
+        Assert.Equal(scenario.Resident.UserId, residentResult.AuthorId);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+        //próba odczytu komentarzy przez właściciela organizacji
+        var ownerComment = await _client.PostAsJsonAsync(
+            url,
+            new CreateTicketCommentRequest
+            {
+                Content = "Dziękuję za informację."
+            });
+
+        Assert.Equal(HttpStatusCode.Created, ownerComment.StatusCode);
+
+        var ownerResult =
+            await ReadAsync<TicketCommentResponse>(ownerComment);
+
+        Assert.Equal(scenario.Owner.UserId, ownerResult.AuthorId);
+
+        UseToken(outsider.Auth.AccessToken);
+
+        var forbiddenRead = await _client.GetAsync(url);
+
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            forbiddenRead.StatusCode);
+        //próba dodania komentarza przez osobę niepowiązaną z organizacją
+        var forbiddenWrite = await _client.PostAsJsonAsync(
+            url,
+            new CreateTicketCommentRequest
+            {
+                Content = "Niedozwolony komentarz."
+            });
+
+        Assert.Equal(
+            HttpStatusCode.NotFound,
+            forbiddenWrite.StatusCode);
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        var commentsResponse = await _client.GetAsync(url);
+
+        Assert.Equal(HttpStatusCode.OK, commentsResponse.StatusCode);
+
+        var comments =
+            await ReadAsync<PagedResponse<TicketCommentResponse>>(
+                commentsResponse);
+
+        Assert.Equal(2, comments.TotalCount);
+    }
+
+    [Fact]
+    public async Task InactiveUnitAssignment_RemovesResidentTicketAccess()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        var created = await _client.PostAsJsonAsync(
+            $"/api/units/{scenario.Unit.Id}/tickets",
+            ValidTicketRequest());
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var ticket = await ReadAsync<TicketResponse>(created);
+
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider
+                .GetRequiredService<AppDbContext>();
+
+            var assignment = await db.UnitResidents.SingleAsync(
+                assignment =>
+                    assignment.UnitId == scenario.Unit.Id &&
+                    assignment.UserId == scenario.Resident.UserId);
+
+            assignment.IsActive = false;
+
+            await db.SaveChangesAsync();
+        }
+
+        var details = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.NotFound, details.StatusCode);
+
+        var anotherCreate = await _client.PostAsJsonAsync(
+            $"/api/units/{scenario.Unit.Id}/tickets",
+            ValidTicketRequest());
+
+        Assert.Equal(HttpStatusCode.NotFound, anotherCreate.StatusCode);
+
+        //zgłoszenie pozostaje widoczne dla właściciela
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var ownerDetails = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, ownerDetails.StatusCode);
+    }
+
+    [Fact]
+    public async Task Ticket_IsVisibleToReporterAndOwner_ButNotOtherResident()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+        var otherResident = await RegisterAndLoginAsync();
+
+        //drugi mieszkaniec
+        using (var scope = _factory.Services.CreateScope())
+        {
+            var db = scope.ServiceProvider
+                .GetRequiredService<AppDbContext>();
+
+            db.OrganizationMemberships.Add(new OrganizationMembership
+            {
+                OrganizationId = scenario.Owner.OrganizationId,
+                UserId = otherResident.UserId,
+                Role = OrganizationRole.Resident,
+                IsActive = true
+            });
+
+            db.UnitResidents.Add(new UnitResident
+            {
+                UnitId = scenario.Unit.Id,
+                UserId = otherResident.UserId,
+                IsActive = true
+            });
+
+            await db.SaveChangesAsync();
+        }
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        var created = await _client.PostAsJsonAsync(
+            $"/api/units/{scenario.Unit.Id}/tickets",
+            ValidTicketRequest());
+
+        Assert.Equal(HttpStatusCode.Created, created.StatusCode);
+
+        var ticket = await ReadAsync<TicketResponse>(created);
+
+        Assert.Equal("New", ticket.Status);
+        Assert.Equal(scenario.Resident.UserId, ticket.ReporterId);
+        Assert.Equal(scenario.Owner.OrganizationId, ticket.OrganizationId);
+
+        var reporterResponse = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, reporterResponse.StatusCode);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var ownerResponse = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);
+
+        var organizationResponse = await _client.GetAsync(
+            $"/api/organizations/{scenario.Owner.OrganizationId}/tickets");
+
+        Assert.Equal(HttpStatusCode.OK, organizationResponse.StatusCode);
+
+        var organizationTickets =
+            await ReadAsync<PagedResponse<TicketResponse>>(
+                organizationResponse);
+
+        Assert.Equal(ticket.Id, Assert.Single(organizationTickets.Items).Id);
+
+        UseToken(otherResident.Auth.AccessToken);
+
+        var otherResponse = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.NotFound, otherResponse.StatusCode);
+
+        var otherMineResponse = await _client.GetAsync("/api/tickets/mine");
+
+        Assert.Equal(HttpStatusCode.OK, otherMineResponse.StatusCode);
+
+        var otherMine =
+            await ReadAsync<PagedResponse<TicketResponse>>(otherMineResponse);
+
+        Assert.Empty(otherMine.Items);
     }
 
     [Fact]

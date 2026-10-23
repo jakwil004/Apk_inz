@@ -24,6 +24,9 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
     public DbSet<ResidentInvitation> ResidentInvitations => Set<ResidentInvitation>();
     public DbSet<UnitResident> UnitResidents => Set<UnitResident>();
+    public DbSet<Ticket> Tickets => Set<Ticket>();
+    public DbSet<TicketStatusHistory> TicketStatusHistories => Set<TicketStatusHistory>();
+    public DbSet<TicketComment> TicketComments => Set<TicketComment>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -44,6 +47,105 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
             entity.HasIndex(x => x.NormalizedEmail)
                 .HasDatabaseName("EmailIndex")
                 .IsUnique();
+        });
+        modelBuilder.Entity<TicketStatusHistory>(entity =>
+        {
+            entity.ToTable("TicketStatusHistories");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.FromStatus)
+                .HasConversion<string>()
+                .HasMaxLength(30);
+
+            entity.Property(x => x.ToStatus)
+                .HasConversion<string>()
+                .HasMaxLength(30)
+                .IsRequired();
+
+            entity.Property(x => x.Reason)
+                .HasMaxLength(1000)
+                .IsRequired();
+
+            entity.HasIndex(x => new { x.TicketId, x.ChangedAtUtc });
+
+            entity.HasOne(x => x.Ticket)
+                .WithMany()
+                .HasForeignKey(x => x.TicketId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.ChangedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<TicketComment>(entity =>
+        {
+            entity.ToTable("TicketComments");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Content)
+                .HasMaxLength(4000)
+                .IsRequired();
+
+            entity.HasIndex(x => new { x.TicketId, x.CreatedAtUtc });
+
+            entity.HasOne(x => x.Ticket)
+                .WithMany()
+                .HasForeignKey(x => x.TicketId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.AuthorId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+        modelBuilder.Entity<Ticket>(entity =>
+        {
+            entity.ToTable("Tickets");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Title)
+                .HasMaxLength(150)
+                .IsRequired();
+
+            entity.Property(x => x.Version)
+                .IsConcurrencyToken();
+
+            entity.Property(x => x.Description)
+                .HasMaxLength(4000)
+                .IsRequired();
+
+            entity.Property(x => x.LocationDetails)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.Property(x => x.Category)
+                .HasConversion<string>()
+                .HasMaxLength(30)
+                .IsRequired();
+
+            entity.Property(x => x.Status)
+                .HasConversion<string>()
+                .HasMaxLength(30)
+                .IsRequired();
+
+            entity.HasOne(x => x.Unit)
+                .WithMany()
+                .HasForeignKey(x => x.UnitId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.ReporterId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(x => new { x.ReporterId, x.CreatedAtUtc });
+
+            entity.HasIndex(x => new { x.UnitId, x.CreatedAtUtc });
         });
 
         modelBuilder.Entity<ResidentInvitation>(entity =>
