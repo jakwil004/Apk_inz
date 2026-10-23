@@ -259,6 +259,70 @@ public sealed class AuthController : ControllerBase
             organizations));
     }
 
+    [HttpPost("register")]
+    [AllowAnonymous]
+    [EnableRateLimiting("auth")]
+    public async Task<ActionResult<RegisterResponse>> Register(
+    RegisterRequest request)
+    {
+        var email = request.Email.Trim();
+
+        var user = new ApplicationUser
+        {
+            Id = Guid.NewGuid(),
+            UserName = email,
+            Email = email,
+            FirstName = request.FirstName.Trim(),
+            LastName = request.LastName.Trim(),
+            IsActive = true,
+            LockoutEnabled = true
+        };
+
+        try
+        {
+            var result = await _userManager.CreateAsync(
+                user,
+                request.Password);
+
+            if (!result.Succeeded)
+            {
+                if (result.Errors.Any(error =>
+                    error.Code is "DuplicateUserName" or "DuplicateEmail"))
+                {
+                    return Conflict(new
+                    {
+                        message = "Nie można utworzyć konta z podanymi danymi."
+                    });
+                }
+
+                return BadRequest(new
+                {
+                    errors = result.Errors.Select(error => new
+                    {
+                        error.Code,
+                        error.Description
+                    })
+                });
+            }
+
+            return StatusCode(
+                StatusCodes.Status201Created,
+                new RegisterResponse(user.Id));
+        }
+        catch (DbUpdateException exception)
+            when (exception.InnerException is PostgresException
+            {
+                SqlState: PostgresErrorCodes.UniqueViolation
+            })
+        {
+            return Conflict(new
+            {
+                message = "Nie można utworzyć konta z podanymi danymi."
+            });
+        }
+    }
+
+
     private UnauthorizedObjectResult InvalidLogin()
     {
         return Unauthorized(new

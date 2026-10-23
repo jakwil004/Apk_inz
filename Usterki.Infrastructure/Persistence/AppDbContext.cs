@@ -22,7 +22,8 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
     public DbSet<OrganizationMembership> OrganizationMemberships => Set<OrganizationMembership>();
     public DbSet<UserSession> UserSessions => Set<UserSession>();
     public DbSet<RefreshToken> RefreshTokens => Set<RefreshToken>();
-
+    public DbSet<ResidentInvitation> ResidentInvitations => Set<ResidentInvitation>();
+    public DbSet<UnitResident> UnitResidents => Set<UnitResident>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -43,6 +44,57 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
             entity.HasIndex(x => x.NormalizedEmail)
                 .HasDatabaseName("EmailIndex")
                 .IsUnique();
+        });
+
+        modelBuilder.Entity<ResidentInvitation>(entity =>
+        {
+            entity.ToTable("ResidentInvitations");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Email)
+                .HasMaxLength(256)
+                .IsRequired();
+
+            entity.Property(x => x.NormalizedEmail)
+                .HasMaxLength(256)
+                .IsRequired();
+
+            entity.Property(x => x.TokenHash)
+                .HasMaxLength(64)
+                .IsRequired();
+
+            entity.HasIndex(x => x.TokenHash)
+                .IsUnique();
+
+            entity.HasOne(x => x.Unit)
+                .WithMany()
+                .HasForeignKey(x => x.UnitId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.CreatedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<UnitResident>(entity =>
+        {
+            entity.ToTable("UnitResidents");
+
+            entity.HasKey(x => new { x.UnitId, x.UserId });
+
+            entity.HasIndex(x => x.UserId);
+
+            entity.HasOne(x => x.Unit)
+                .WithMany()
+                .HasForeignKey(x => x.UnitId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
 
         modelBuilder.Entity<OrganizationMembership>(entity =>

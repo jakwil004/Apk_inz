@@ -1,7 +1,6 @@
 ﻿using System;
 using System.Collections.Generic;
 using System.Text;
-
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
@@ -14,6 +13,7 @@ using Usterki.Domain.Enums;
 using Usterki.Infrastructure.Persistence;
 using Usterki.IntegrationTests.Infrastructure;
 using Xunit;
+using Usterki.Contracts.Residents;
 
 namespace Usterki.IntegrationTests;
 
@@ -256,6 +256,150 @@ public sealed class SecurityIntegrationTests : IDisposable
             HttpStatusCode.Unauthorized,
             newRefreshAfterReplay.StatusCode);
     }
+    [Fact]
+    public async Task Invitation_WrongAccountCannotAccept_AndDoesNotConsumeToken()
+    {
+        var owner = await RegisterAndLoginAsync();
+        var recipient = await RegisterAndLoginAsync();
+        var otherUser = await RegisterAndLoginAsync();
+
+        var building = await CreateBuildingAsync(owner);
+
+        var unitsUrl =
+            $"{BuildingsUrl(owner.OrganizationId)}/{building.Id}/units";
+
+        var unitResponse = await _client.PostAsJsonAsync(
+            unitsUrl,
+            new CreateUnitRequest { Number = "10", Floor = 2 });
+
+        Assert.Equal(HttpStatusCode.Created, unitResponse.StatusCode);
+
+        var unit = await ReadAsync<UnitResponse>(unitResponse);
+
+        var invitationResponse = await _client.PostAsJsonAsync(
+            $"{unitsUrl}/{unit.Id}/invitations",
+            new CreateResidentInvitationRequest
+            {
+                Email = recipient.Email
+            });
+
+        Assert.Equal(HttpStatusCode.Created, invitationResponse.StatusCode);
+
+        var invitation =
+            await ReadAsync<ResidentInvitationResponse>(invitationResponse);
+
+        UseToken(otherUser.Auth.AccessToken);
+
+        var rejected = await _client.PostAsJsonAsync(
+            "/api/invitations/accept",
+            new AcceptResidentInvitationRequest
+            {
+                Token = invitation.Token
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, rejected.StatusCode);
+
+        var otherUnitsResponse = await _client.GetAsync("/api/me/units");
+
+        Assert.Equal(HttpStatusCode.OK, otherUnitsResponse.StatusCode);
+
+        var otherUnits =
+            await ReadAsync<PagedResponse<MyUnitResponse>>(otherUnitsResponse);
+
+        Assert.Empty(otherUnits.Items);
+
+        //próba tokenu z innego konta nie usuwa zaproszenia
+        UseToken(recipient.Auth.AccessToken);
+
+        var accepted = await _client.PostAsJsonAsync(
+            "/api/invitations/accept",
+            new AcceptResidentInvitationRequest
+            {
+                Token = invitation.Token
+            });
+
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+    }
+    [Fact]
+    public async Task Invitation_GrantsOnlyInvitedUnit_AndCanBeUsedOnce()
+    {
+        var owner = await RegisterAndLoginAsync();
+
+        //konto jest właścicielem organizacji i mieszkańcem w innej
+        
+        var resident = await RegisterAndLoginAsync();
+
+        var building = await CreateBuildingAsync(owner);
+
+        var unitsUrl =
+            $"{BuildingsUrl(owner.OrganizationId)}/{building.Id}/units";
+
+        var firstUnitResponse = await _client.PostAsJsonAsync(
+            unitsUrl,
+            new CreateUnitRequest { Number = "1", Floor = 1 });
+
+        Assert.Equal(HttpStatusCode.Created, firstUnitResponse.StatusCode);
+
+        var firstUnit = await ReadAsync<UnitResponse>(firstUnitResponse);
+
+        var secondUnitResponse = await _client.PostAsJsonAsync(
+            unitsUrl,
+            new CreateUnitRequest { Number = "2", Floor = 1 });
+
+        Assert.Equal(HttpStatusCode.Created, secondUnitResponse.StatusCode);
+
+        var invitationResponse = await _client.PostAsJsonAsync(
+            $"{unitsUrl}/{firstUnit.Id}/invitations",
+            new CreateResidentInvitationRequest
+            {
+                Email = resident.Email
+            });
+
+        Assert.Equal(HttpStatusCode.Created, invitationResponse.StatusCode);
+
+        var invitation =
+            await ReadAsync<ResidentInvitationResponse>(invitationResponse);
+
+        UseToken(resident.Auth.AccessToken);
+
+        var accepted = await _client.PostAsJsonAsync(
+            "/api/invitations/accept",
+            new AcceptResidentInvitationRequest
+            {
+                Token = invitation.Token
+            });
+
+        Assert.Equal(HttpStatusCode.OK, accepted.StatusCode);
+
+        var unitsResponse = await _client.GetAsync("/api/me/units");
+
+        Assert.Equal(HttpStatusCode.OK, unitsResponse.StatusCode);
+
+        var units = await ReadAsync<PagedResponse<MyUnitResponse>>(
+            unitsResponse);
+
+        var onlyUnit = Assert.Single(units.Items);
+
+        Assert.Equal(firstUnit.Id, onlyUnit.UnitId);
+        Assert.Equal(owner.OrganizationId, onlyUnit.OrganizationId);
+        Assert.Equal(1, units.TotalCount);
+
+        var managementResponse = await _client.GetAsync(
+            BuildingsUrl(owner.OrganizationId));
+
+        Assert.Equal(
+            HttpStatusCode.Forbidden,
+            managementResponse.StatusCode);
+
+        var secondAccept = await _client.PostAsJsonAsync(
+            "/api/invitations/accept",
+            new AcceptResidentInvitationRequest
+            {
+                Token = invitation.Token
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, secondAccept.StatusCode);
+    }
 
     [Fact]
     public async Task Logout_RevokesOnlyCurrentSession()
@@ -436,3 +580,4 @@ public sealed class SecurityIntegrationTests : IDisposable
         string Email,
         AuthResponse Auth);
 }
+

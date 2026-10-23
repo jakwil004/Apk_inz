@@ -60,3 +60,19 @@ public sealed class RefreshRequest
     [Required, StringLength(200, MinimumLength = 40)]
     public string RefreshToken { get; set; } = string.Empty;
 }
+public sealed class RegisterRequest
+{
+    [Required, StringLength(100)]
+    public string FirstName { get; set; } = string.Empty;
+
+    [Required, StringLength(100)]
+    public string LastName { get; set; } = string.Empty;
+
+    [Required, EmailAddress, StringLength(256)]
+    public string Email { get; set; } = string.Empty;
+
+    [Required, StringLength(128, MinimumLength = 12)]
+    public string Password { get; set; } = string.Empty;
+}
+
+public sealed record RegisterResponse(Guid UserId);
