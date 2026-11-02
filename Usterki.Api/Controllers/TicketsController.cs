@@ -10,6 +10,7 @@ using Usterki.Domain.Entities;
 using Usterki.Domain.Enums;
 using Usterki.Infrastructure.Persistence;
 using Usterki.Domain.Rules;
+using Usterki.Api.Errors;
 
 namespace Usterki.Api.Controllers;
 
@@ -414,11 +415,13 @@ public sealed class TicketsController : ControllerBase
 
     private ConflictObjectResult TicketVersionConflict()
     {
-        return Conflict(new
-        {
-            message = "Zgłoszenie zostało zmienione. " +
-                      "Pobierz aktualne dane i ponów operację."
-        });
+        return new ConflictObjectResult(
+            ApiErrors.Create(
+                HttpContext,
+                StatusCodes.Status409Conflict,
+                code: "ticket_version_conflict",
+                detail: "Zgłoszenie zostało zmienione. " +
+                        "Pobierz aktualne dane i ponów operację."));
     }
 
     [HttpGet("organizations/{organizationId:guid}/tickets")]

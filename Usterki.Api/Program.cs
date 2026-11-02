@@ -10,11 +10,126 @@ using Usterki.Infrastructure.Identity;
 using Usterki.Infrastructure.Persistence;
 using Usterki.Api.Authorization;
 using Usterki.Domain.Enums;
+using Microsoft.AspNetCore.Mvc;
+using Usterki.Api.Errors;
+using Microsoft.OpenApi;
+using Usterki.Contracts.Common;
 
 var builder = WebApplication.CreateBuilder(args);
 
-builder.Services.AddControllers();
-builder.Services.AddOpenApi();
+builder.Services
+    .AddControllers(options =>
+    {
+        options.Filters.Add<ApiProblemResultFilter>();
+    })
+    .ConfigureApiBehaviorOptions(options =>
+    {
+        options.InvalidModelStateResponseFactory = context =>
+        {
+            var problem = new ValidationProblemDetails(
+                context.ModelState)
+            {
+                Type = "about:blank",
+                Title = "Nieprawidłowe dane wejściowe",
+                Status = StatusCodes.Status400BadRequest,
+                Detail = "Popraw wskazane pola."
+            };
+
+            problem.Extensions["code"] = "validation_failed";
+
+            ApiErrors.Enrich(context.HttpContext, problem);
+
+            var result = new BadRequestObjectResult(problem);
+            result.ContentTypes.Add("application/problem+json");
+
+            return result;
+        };
+    });
+
+builder.Services.AddProblemDetails(options =>
+{
+    options.CustomizeProblemDetails = context =>
+    {
+        ApiErrors.Enrich(
+            context.HttpContext,
+            context.ProblemDetails);
+    };
+});
+
+builder.Services.AddExceptionHandler<GlobalExceptionHandler>();
+builder.Services.AddOpenApi(options =>
+{
+    options.AddDocumentTransformer(
+        (document, context, cancellationToken) =>
+        {
+            document.Info.Title = "Usterki API";
+            document.Info.Version = "v1";
+            document.Info.Description =
+                "API systemu zgłaszania i obsługi usterek.";
+
+            document.Components ??= new OpenApiComponents();
+
+            document.Components.SecuritySchemes ??=
+                new Dictionary<string, IOpenApiSecurityScheme>();
+
+            document.Components.SecuritySchemes["Bearer"] =
+                new OpenApiSecurityScheme
+                {
+                    Type = SecuritySchemeType.Http,
+                    Scheme = "bearer",
+                    BearerFormat = "JWT",
+                    Description =
+                        "Access token otrzymany po zalogowaniu."
+                };
+
+            return Task.CompletedTask;
+        });
+
+    options.AddOperationTransformer(
+        async (operation, context, cancellationToken) =>
+        {
+            var allowsAnonymous =
+                context.Description.ActionDescriptor.EndpointMetadata
+                    .OfType<IAllowAnonymous>()
+                    .Any();
+
+            operation.Security = new List<OpenApiSecurityRequirement>();
+
+            //api ma zabezpieczenie JWT
+            //wszystkie endpointy wymagają autoryzacji chyba że będa miały [allowanonymous]
+            if (!allowsAnonymous)
+            {
+                operation.Security.Add(
+                    new OpenApiSecurityRequirement
+                    {
+                        [new OpenApiSecuritySchemeReference(
+                            "Bearer",
+                            context.Document)] = []
+                    });
+            }
+
+            var errorSchema = await context.GetOrCreateSchemaAsync(
+                typeof(ApiProblemResponse),
+                null,
+                cancellationToken);
+
+            operation.Responses ??= new OpenApiResponses();
+
+            //ogólne błędy API, które nie są obsługiwane przez inne odpowiedzi
+            operation.Responses["default"] = new OpenApiResponse
+            {
+                Description =
+                    "Błąd API. Pole code zawiera stabilny kod błędu.",
+                Content = new Dictionary<string, OpenApiMediaType>
+                {
+                    ["application/problem+json"] = new OpenApiMediaType
+                    {
+                        Schema = errorSchema
+                    }
+                }
+            };
+        });
+});
 
 
 //PostgreSQL
@@ -211,6 +326,18 @@ builder.Services.AddScoped<
 
 var app = builder.Build();
 
+app.UseExceptionHandler();
+
+app.UseStatusCodePages(async statusContext =>
+{
+    var httpContext = statusContext.HttpContext;
+
+    var problem = ApiErrors.Create(
+        httpContext,
+        httpContext.Response.StatusCode);
+
+    await ApiErrors.WriteAsync(httpContext, problem);
+});
 app.UseHttpsRedirection();
 app.UseRouting();
 

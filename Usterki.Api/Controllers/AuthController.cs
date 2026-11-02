@@ -6,6 +6,7 @@ using Microsoft.AspNetCore.RateLimiting;
 using Microsoft.EntityFrameworkCore;
 using Npgsql;
 using Usterki.Api.Auth;
+using Usterki.Api.Errors;
 using Usterki.Contracts.Auth;
 using Usterki.Domain.Entities;
 using Usterki.Domain.Enums;
@@ -325,9 +326,12 @@ public sealed class AuthController : ControllerBase
 
     private UnauthorizedObjectResult InvalidLogin()
     {
-        return Unauthorized(new
-        {
-            message = "Nieprawidłowe dane logowania lub konto jest niedostępne."
-        });
+        return new UnauthorizedObjectResult(
+            ApiErrors.Create(
+                HttpContext,
+                StatusCodes.Status401Unauthorized,
+                code: "invalid_credentials",
+                detail: "Nieprawidłowe dane logowania " +
+                        "lub konto jest niedostępne."));
     }
 }

@@ -1,21 +1,23 @@
 ﻿using System;
 using System.Collections.Generic;
-using System.Text;
 using System.Net;
 using System.Net.Http.Headers;
 using System.Net.Http.Json;
+using System.Text;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Usterki.Contracts.Auth;
+using Usterki.Contracts.Common;
 using Usterki.Contracts.Properties;
-using Usterki.Domain.Enums;
-using Usterki.Infrastructure.Persistence;
-using Usterki.IntegrationTests.Infrastructure;
-using Xunit;
 using Usterki.Contracts.Residents;
 using Usterki.Contracts.Tickets;
 using Usterki.Domain.Entities;
+using Usterki.Domain.Enums;
+using Usterki.Infrastructure.Persistence;
+using Usterki.IntegrationTests.Infrastructure;
+using Microsoft.AspNetCore.TestHost;
+using Xunit;
 
 namespace Usterki.IntegrationTests;
 
@@ -148,6 +150,48 @@ public sealed class SecurityIntegrationTests : IDisposable
         Assert.Equal(expectedStatus, response.StatusCode);
     }
     [Fact]
+    public async Task UnexpectedException_ReturnsSafeProblemDetails()
+    {//test sprawdzający czy nie ujawnia się szczegółów wyjątku w odpowiedzi API
+        using var factory = _factory.WithWebHostBuilder(builder =>
+        {
+            builder.ConfigureTestServices(services =>
+            {
+                services.AddControllers()
+                    .AddApplicationPart(
+                        typeof(FailureProbeController).Assembly);
+            });
+        });
+
+        using var client = factory.CreateClient(
+            new WebApplicationFactoryClientOptions
+            {
+                BaseAddress = new Uri("https://localhost"),
+                AllowAutoRedirect = false
+            });
+
+        var response = await client.GetAsync("/_tests/failure");
+
+        Assert.Equal(
+            HttpStatusCode.InternalServerError,
+            response.StatusCode);
+
+        Assert.Equal(
+            "application/problem+json",
+            response.Content.Headers.ContentType?.MediaType);
+
+        var body = await response.Content.ReadAsStringAsync();
+
+        Assert.DoesNotContain("INTERNAL_TEST_MARKER_DO_NOT_EXPOSE", body);
+        Assert.DoesNotContain("InvalidOperationException", body);
+
+        var problem = await ReadAsync<ApiProblemResponse>(response);
+
+        Assert.Equal("internal_error", problem.Code);
+        Assert.Equal(500, problem.Status);
+        Assert.False(string.IsNullOrWhiteSpace(problem.TraceId));
+    }
+
+    [Fact]
     public async Task Resident_CannotCreateTicketForUnassignedUnit()
     {
         var scenario = await CreateTicketScenarioAsync();
@@ -228,6 +272,11 @@ public sealed class SecurityIntegrationTests : IDisposable
             });
 
         Assert.Equal(HttpStatusCode.Conflict, staleChange.StatusCode);
+
+        var conflictProblem = await ReadAsync<ApiProblemResponse>(staleChange);
+        Assert.Equal(
+            "ticket_version_conflict",
+            conflictProblem.Code);
 
         var historyResponse = await _client.GetAsync(
             $"/api/tickets/{ticket.Id}/status-history");
@@ -849,6 +898,77 @@ public sealed class SecurityIntegrationTests : IDisposable
             });
 
         Assert.Equal(HttpStatusCode.BadRequest, secondAccept.StatusCode);
+    }
+    [Fact]
+    public async Task MissingJwt_ReturnsProblemDetails_AndBearerChallenge()
+    {//brak tokenu JWT w nagłówku autoryzacji
+        _client.DefaultRequestHeaders.Authorization = null;
+
+        var response = await _client.GetAsync("/api/auth/me");
+
+        Assert.Equal(HttpStatusCode.Unauthorized, response.StatusCode);
+
+        Assert.Equal(
+            "application/problem+json",
+            response.Content.Headers.ContentType?.MediaType);
+
+        Assert.Contains(
+            response.Headers.WwwAuthenticate,
+            header => header.Scheme == "Bearer");
+
+        var problem = await ReadAsync<ApiProblemResponse>(response);
+
+        Assert.Equal(401, problem.Status);
+        Assert.Equal("unauthorized", problem.Code);
+        Assert.Equal("/api/auth/me", problem.Instance);
+        Assert.False(string.IsNullOrWhiteSpace(problem.TraceId));
+    }
+
+    [Fact]
+    public async Task InvalidRegistration_ReturnsValidationProblemDetails()
+    {//próba rejestracji z niepoprawnymi danymi
+        var response = await _client.PostAsJsonAsync(
+            "/api/auth/register",
+            new RegisterRequest
+            {
+                FirstName = "",
+                LastName = "Test",
+                Email = "niepoprawny-email",
+                Password = "123"
+            });
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+
+        Assert.Equal(
+            "application/problem+json",
+            response.Content.Headers.ContentType?.MediaType);
+
+        var problem = await ReadAsync<ApiProblemResponse>(response);
+
+        Assert.Equal("validation_failed", problem.Code);
+        Assert.NotNull(problem.Errors);
+        Assert.NotEmpty(problem.Errors!);
+        Assert.False(string.IsNullOrWhiteSpace(problem.TraceId));
+    }
+
+    [Fact]
+    public async Task ForeignOrganization_ReturnsForbiddenProblemDetails()
+    {
+        var ownerA = await RegisterAndLoginAsync();
+        var ownerB = await RegisterAndLoginAsync();
+
+        UseToken(ownerA.Auth.AccessToken);
+        //próba dostępu do organizacji B przy użyciu tokenu właściciela organizacji A
+        var response = await _client.GetAsync(
+            BuildingsUrl(ownerB.OrganizationId));
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        var problem = await ReadAsync<ApiProblemResponse>(response);
+
+        Assert.Equal(403, problem.Status);
+        Assert.Equal("forbidden", problem.Code);
+        Assert.False(string.IsNullOrWhiteSpace(problem.TraceId));
     }
 
     [Fact]
