@@ -825,6 +825,134 @@ public sealed class SecurityIntegrationTests : IDisposable
             HttpStatusCode.Forbidden,
             response.StatusCode);
     }
+    [Fact]
+    public async Task GetMine_FiltersAndPaginatesTickets()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        for (var i = 1; i <= 2; i++)
+        {
+            var request = new CreateTicketRequest
+            {
+                Title = $"Wyciek pod umywalką {i}",
+                Description = "Woda kapie z połączenia syfonu.",
+                LocationDetails = "Łazienka",
+                Category = "Plumbing"
+            };
+
+            var createResponse = await _client.PostAsJsonAsync(
+                $"/api/units/{scenario.Unit.Id}/tickets",
+                request);
+
+            Assert.Equal(
+                HttpStatusCode.Created,
+                createResponse.StatusCode);
+
+            var created = await ReadAsync<TicketResponse>(createResponse);
+
+            Assert.Equal("New", created.Status);
+            Assert.Equal("Plumbing", created.Category);
+            Assert.Equal(scenario.Resident.UserId, created.ReporterId);
+            Assert.Contains("Wyciek", created.Title);
+        }
+
+        var response = await _client.GetAsync(
+            "/api/tickets/mine" +
+            "?Status=New" +
+            "&Category=Plumbing" +
+            "&Search=wyciek" +
+            "&Page=2" +
+            "&PageSize=1" +
+            "&Sort=created_asc");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var page = await ReadAsync<PagedResponse<TicketResponse>>(
+            response);
+
+        Assert.Equal(2, page.TotalCount);
+        Assert.Equal(2, page.Page);
+        Assert.Equal(1, page.PageSize);
+        Assert.Single(page.Items);
+
+        Assert.All(page.Items, ticket =>
+        {
+            Assert.Equal("New", ticket.Status);
+            Assert.Equal("Plumbing", ticket.Category);
+            Assert.Equal(scenario.Resident.UserId, ticket.ReporterId);
+        });
+
+        var excludedResponse = await _client.GetAsync(
+            "/api/tickets/mine?Category=Electrical");
+
+        Assert.Equal(
+            HttpStatusCode.OK,
+            excludedResponse.StatusCode);
+
+        var excludedPage =
+            await ReadAsync<PagedResponse<TicketResponse>>(
+                excludedResponse);
+
+        Assert.Equal(0, excludedPage.TotalCount);
+        Assert.Empty(excludedPage.Items);
+    }
+
+    [Fact]
+    public async Task GetMine_ForeignUnitFilter_ReturnsEmptyPage()
+    {
+        //test sprawdzający czy filtr UnitId nie ujawnia zgłoszeń z innych lokali
+        var first = await CreateTicketScenarioAsync();
+        var second = await CreateTicketScenarioAsync();
+
+        await CreateTicketForAsync(
+            first.Resident,
+            first.Unit.Id);
+
+        await CreateTicketForAsync(
+            second.Resident,
+            second.Unit.Id);
+
+        UseToken(first.Resident.Auth.AccessToken);
+
+        var response = await _client.GetAsync(
+            $"/api/tickets/mine?UnitId={second.Unit.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+
+        var page = await ReadAsync<PagedResponse<TicketResponse>>(
+            response);
+
+        Assert.Equal(0, page.TotalCount);
+        Assert.Empty(page.Items);
+    }
+
+    [Theory]
+    [InlineData("Status=1")]
+    [InlineData("Category=Unknown")]
+    [InlineData("Sort=random")]
+    [InlineData("PageSize=101")]
+    [InlineData(
+    "UnassignedOnly=true&AssignedTechnicianId=" +
+    "11111111-1111-1111-1111-111111111111")]
+    [InlineData(
+    "CreatedFromUtc=2026-12-01T00:00:00Z&" +
+    "CreatedToUtc=2026-11-01T00:00:00Z")]
+    public async Task GetMine_InvalidFilters_ReturnsBadRequest(
+    string queryString)
+    {
+        var user = await RegisterAndLoginAsync();
+
+        UseToken(user.Auth.AccessToken);
+
+        var response = await _client.GetAsync(
+            $"/api/tickets/mine?{queryString}");
+
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            response.StatusCode);
+    }
 
     [Fact]
     public async Task Owner_CannotAccessAnotherOrganizationsBuilding()

@@ -4,13 +4,14 @@ using Microsoft.AspNetCore.Authorization;
 using Microsoft.AspNetCore.Mvc;
 using Microsoft.EntityFrameworkCore;
 using Usterki.Api.Authorization;
+using Usterki.Api.Errors;
+using Usterki.Api.Queries;
 using Usterki.Contracts.Properties;
 using Usterki.Contracts.Tickets;
 using Usterki.Domain.Entities;
 using Usterki.Domain.Enums;
-using Usterki.Infrastructure.Persistence;
 using Usterki.Domain.Rules;
-using Usterki.Api.Errors;
+using Usterki.Infrastructure.Persistence;
 
 namespace Usterki.Api.Controllers;
 
@@ -184,7 +185,7 @@ public sealed class TicketsController : ControllerBase
 
     [HttpGet("tickets/mine")]
     public async Task<ActionResult<PagedResponse<TicketResponse>>> GetMine(
-        [FromQuery] PaginationQuery pagination,
+        [FromQuery] TicketListQuery filters,
         CancellationToken cancellationToken)
     {
         if (!TryGetUserId(out var userId))
@@ -197,7 +198,7 @@ public sealed class TicketsController : ControllerBase
 
         return Ok(await ToPageAsync(
             query,
-            pagination,
+            filters,
             cancellationToken));
     }
     [HttpPost("tickets/{ticketId:guid}/comments")]
@@ -429,7 +430,7 @@ public sealed class TicketsController : ControllerBase
     public async Task<ActionResult<PagedResponse<TicketResponse>>>
         GetOrganizationTickets(
             Guid organizationId,
-            [FromQuery] PaginationQuery pagination,
+            [FromQuery] TicketListQuery filters,
             CancellationToken cancellationToken)
     {
         var query = _db.Tickets
@@ -439,7 +440,7 @@ public sealed class TicketsController : ControllerBase
 
         return Ok(await ToPageAsync(
             query,
-            pagination,
+            filters,
             cancellationToken));
     }
     [HttpGet(
@@ -492,7 +493,7 @@ public sealed class TicketsController : ControllerBase
 
     [HttpGet("tickets/assigned")]
     public async Task<ActionResult<PagedResponse<TicketResponse>>> GetAssigned(
-    [FromQuery] PaginationQuery pagination,
+    [FromQuery] TicketListQuery filters,
     CancellationToken cancellationToken)
     {
         if (!TryGetUserId(out var userId))
@@ -512,7 +513,7 @@ public sealed class TicketsController : ControllerBase
 
         return Ok(await ToPageAsync(
             query,
-            pagination,
+            filters,
             cancellationToken));
     }
 
@@ -665,24 +666,26 @@ public sealed class TicketsController : ControllerBase
     }
 
     private static async Task<PagedResponse<TicketResponse>> ToPageAsync(
-        IQueryable<Ticket> query,
-        PaginationQuery pagination,
-        CancellationToken cancellationToken)
+       IQueryable<Ticket> query,
+       TicketListQuery filters,
+       CancellationToken cancellationToken)
     {
-        var totalCount = await query.CountAsync(cancellationToken);
+        var filteredQuery = query.ApplyFilters(filters);
 
-        var items = await query
-            .OrderByDescending(ticket => ticket.CreatedAtUtc)
-            .ThenBy(ticket => ticket.Id)
-            .Skip((pagination.Page - 1) * pagination.PageSize)
-            .Take(pagination.PageSize)
+        var totalCount = await filteredQuery.CountAsync(
+            cancellationToken);
+
+        var items = await filteredQuery
+            .ApplySorting(filters.Sort)
+            .Skip((filters.Page - 1) * filters.PageSize)
+            .Take(filters.PageSize)
             .Select(ToResponse)
             .ToListAsync(cancellationToken);
 
         return new PagedResponse<TicketResponse>(
             items,
-            pagination.Page,
-            pagination.PageSize,
+            filters.Page,
+            filters.PageSize,
             totalCount);
     }
 
