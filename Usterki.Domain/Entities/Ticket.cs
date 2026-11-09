@@ -27,5 +27,7 @@ public class Ticket
     public TicketStatus Status { get; set; } = TicketStatus.New;
 
     public DateTime CreatedAtUtc { get; set; } = DateTime.UtcNow;
-    
+
+    public Guid? AssignedTechnicianId { get; set; }
+
 }

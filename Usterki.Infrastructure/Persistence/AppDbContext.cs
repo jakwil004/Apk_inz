@@ -27,6 +27,7 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
     public DbSet<Ticket> Tickets => Set<Ticket>();
     public DbSet<TicketStatusHistory> TicketStatusHistories => Set<TicketStatusHistory>();
     public DbSet<TicketComment> TicketComments => Set<TicketComment>();
+    public DbSet<TicketAssignmentHistory> TicketAssignmentHistories => Set<TicketAssignmentHistory>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -47,6 +48,38 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
             entity.HasIndex(x => x.NormalizedEmail)
                 .HasDatabaseName("EmailIndex")
                 .IsUnique();
+        });
+        modelBuilder.Entity<TicketAssignmentHistory>(entity =>
+        {
+            entity.ToTable("TicketAssignmentHistories");
+
+            entity.HasKey(x => x.Id);
+
+            entity.Property(x => x.Reason)
+                .HasMaxLength(1000)
+                .IsRequired();
+
+            entity.HasIndex(x => new { x.TicketId, x.ChangedAtUtc });
+
+            entity.HasOne(x => x.Ticket)
+                .WithMany()
+                .HasForeignKey(x => x.TicketId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.PreviousTechnicianId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.NewTechnicianId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.ChangedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
         modelBuilder.Entity<TicketStatusHistory>(entity =>
         {
@@ -142,6 +175,12 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
                 .WithMany()
                 .HasForeignKey(x => x.ReporterId)
                 .OnDelete(DeleteBehavior.Restrict);
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(x => x.AssignedTechnicianId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasIndex(x => new { x.AssignedTechnicianId,x.CreatedAtUtc });
 
             entity.HasIndex(x => new { x.ReporterId, x.CreatedAtUtc });
 

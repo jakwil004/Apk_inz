@@ -442,6 +442,197 @@ public sealed class TicketsController : ControllerBase
             pagination,
             cancellationToken));
     }
+    [HttpGet(
+    "organizations/{organizationId:guid}/tickets/{ticketId:guid}/assignment-history")]
+    [Authorize(Policy = AuthorizationPolicies.ManageTickets)]
+    public async Task<ActionResult<PagedResponse<TicketAssignmentHistoryResponse>>>
+    GetAssignmentHistory(
+        Guid organizationId,
+        Guid ticketId,
+        [FromQuery] PaginationQuery pagination,
+        CancellationToken cancellationToken)
+    {
+        var ticketExists = await _db.Tickets.AnyAsync(
+            ticket =>
+                ticket.Id == ticketId &&
+                ticket.Unit.Building.OrganizationId == organizationId,
+            cancellationToken);
+
+        if (!ticketExists)
+        {
+            return NotFound();
+        }
+
+        var query = _db.TicketAssignmentHistories
+            .AsNoTracking()
+            .Where(history => history.TicketId == ticketId);
+
+        var totalCount = await query.CountAsync(cancellationToken);
+
+        var items = await query
+            .OrderBy(history => history.ChangedAtUtc)
+            .ThenBy(history => history.Id)
+            .Skip((pagination.Page - 1) * pagination.PageSize)
+            .Take(pagination.PageSize)
+            .Select(history => new TicketAssignmentHistoryResponse(
+                history.Id,
+                history.PreviousTechnicianId,
+                history.NewTechnicianId,
+                history.ChangedByUserId,
+                history.Reason,
+                history.ChangedAtUtc))
+            .ToListAsync(cancellationToken);
+
+        return Ok(new PagedResponse<TicketAssignmentHistoryResponse>(
+            items,
+            pagination.Page,
+            pagination.PageSize,
+            totalCount));
+    }
+
+    [HttpGet("tickets/assigned")]
+    public async Task<ActionResult<PagedResponse<TicketResponse>>> GetAssigned(
+    [FromQuery] PaginationQuery pagination,
+    CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var query = VisibleTickets(userId)
+            .Where(ticket =>
+                ticket.AssignedTechnicianId == userId &&
+                _db.OrganizationMemberships.Any(membership =>
+                    membership.UserId == userId &&
+                    membership.OrganizationId ==
+                        ticket.Unit.Building.OrganizationId &&
+                    membership.Role == OrganizationRole.Technician &&
+                    membership.IsActive));
+
+        return Ok(await ToPageAsync(
+            query,
+            pagination,
+            cancellationToken));
+    }
+
+    [HttpPut("organizations/{organizationId:guid}/tickets/{ticketId:guid}/assignment")]
+    [Authorize(Policy = AuthorizationPolicies.ManageTickets)]
+    public async Task<ActionResult<TicketResponse>> ChangeAssignment(
+    Guid organizationId,
+    Guid ticketId,
+    ChangeTicketAssignmentRequest request,
+    CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        if (request.TechnicianId == Guid.Empty)
+        {
+            return BadRequest(ApiErrors.Create(
+                HttpContext,
+                StatusCodes.Status400BadRequest,
+                code: "invalid_technician_id",
+                detail: "Podaj identyfikator serwisanta albo null."));
+        }
+
+        var ticket = await _db.Tickets.SingleOrDefaultAsync(
+            ticket =>
+                ticket.Id == ticketId &&
+                ticket.Unit.Building.OrganizationId == organizationId,
+            cancellationToken);
+
+        if (ticket is null)
+        {
+            return NotFound();
+        }
+
+        if (ticket.Version != request.ExpectedVersion)
+        {
+            return TicketVersionConflict();
+        }
+
+        if (request.TechnicianId is Guid technicianId)
+        {
+            if (ticket.Status is TicketStatus.Closed or TicketStatus.Rejected)
+            {
+                return Conflict(ApiErrors.Create(
+                    HttpContext,
+                    StatusCodes.Status409Conflict,
+                    code: "ticket_assignment_not_allowed",
+                    detail: "Nie można przydzielić serwisanta do " +
+                            "zamkniętego lub odrzuconego zgłoszenia."));
+            }
+
+            var validTechnician = await (
+                from membership in _db.OrganizationMemberships
+                join user in _db.Users
+                    on membership.UserId equals user.Id
+                where membership.OrganizationId == organizationId
+                      && membership.UserId == technicianId
+                      && membership.Role == OrganizationRole.Technician
+                      && membership.IsActive
+                      && user.IsActive
+                select membership.UserId
+            ).AnyAsync(cancellationToken);
+
+            if (!validTechnician)
+            {
+                return BadRequest(ApiErrors.Create(
+                    HttpContext,
+                    StatusCodes.Status400BadRequest,
+                    code: "technician_not_available",
+                    detail: "Wybrane konto nie jest aktywnym serwisantem " +
+                            "tej organizacji."));
+            }
+        }
+
+        //jeżeli zgłoszenie już ma przypisanego serwisanta i jest to ten sam serwisant, to nie wykonujemy żadnych zmian
+        if (ticket.AssignedTechnicianId == request.TechnicianId)
+        {
+            var unchanged = await _db.Tickets
+                .AsNoTracking()
+                .Where(item => item.Id == ticketId)
+                .Select(ToResponse)
+                .SingleAsync(cancellationToken);
+
+            return Ok(unchanged);
+        }
+
+        var previousTechnicianId = ticket.AssignedTechnicianId;
+
+        ticket.AssignedTechnicianId = request.TechnicianId;
+        ticket.Version++;
+
+        _db.TicketAssignmentHistories.Add(new TicketAssignmentHistory
+        {
+            TicketId = ticket.Id,
+            PreviousTechnicianId = previousTechnicianId,
+            NewTechnicianId = request.TechnicianId,
+            ChangedByUserId = userId,
+            Reason = request.Reason.Trim(),
+            ChangedAtUtc = DateTime.UtcNow
+        });
+
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return TicketVersionConflict();
+        }
+
+        var response = await _db.Tickets
+            .AsNoTracking()
+            .Where(item => item.Id == ticketId)
+            .Select(ToResponse)
+            .SingleAsync(cancellationToken);
+
+        return Ok(response);
+    }
 
     private IQueryable<Ticket> VisibleTickets(Guid userId)
     {
@@ -456,6 +647,12 @@ public sealed class TicketsController : ControllerBase
                     (
                         membership.Role == OrganizationRole.Owner ||
                         membership.Role == OrganizationRole.Manager ||
+
+                        (
+                            membership.Role == OrganizationRole.Technician &&
+                            ticket.AssignedTechnicianId == userId
+                        ) ||
+
                         (
                             membership.Role == OrganizationRole.Resident &&
                             ticket.ReporterId == userId &&
@@ -511,5 +708,6 @@ public sealed class TicketsController : ControllerBase
             ticket.Category.ToString(),
             ticket.Status.ToString(),
             ticket.CreatedAtUtc,
-            ticket.Version);
+            ticket.Version,
+            ticket.AssignedTechnicianId);
 }

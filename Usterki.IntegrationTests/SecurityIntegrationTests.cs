@@ -17,6 +17,7 @@ using Usterki.Domain.Enums;
 using Usterki.Infrastructure.Persistence;
 using Usterki.IntegrationTests.Infrastructure;
 using Microsoft.AspNetCore.TestHost;
+using Usterki.Contracts.Technicians;
 using Xunit;
 
 namespace Usterki.IntegrationTests;
@@ -53,6 +54,21 @@ public sealed class SecurityIntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.Created, response.StatusCode);
 
         return await ReadAsync<TicketResponse>(response);
+    }
+    private async Task AddTechnicianAsync(
+    TestOwner owner,
+    TestOwner technician)
+    {
+        UseToken(owner.Auth.AccessToken);
+
+        var response = await _client.PostAsJsonAsync(
+            $"/api/organizations/{owner.OrganizationId}/technicians",
+            new AddTechnicianRequest
+            {
+                Email = technician.Email
+            });
+
+        Assert.Equal(HttpStatusCode.Created, response.StatusCode);
     }
 
     private async Task<(
@@ -148,6 +164,227 @@ public sealed class SecurityIntegrationTests : IDisposable
             BuildingsUrl(owner.OrganizationId));
 
         Assert.Equal(expectedStatus, response.StatusCode);
+    }
+    [Fact]
+    public async Task Technician_CannotAssignTicketToHimself()
+    {
+        //test sprawdzający czy serwisant nie może samodzielnie przydzielić sobie zgłoszenia
+        var scenario = await CreateTicketScenarioAsync();
+        var technician = await RegisterAndLoginAsync();
+
+        await AddTechnicianAsync(scenario.Owner, technician);
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        UseToken(technician.Auth.AccessToken);
+
+        var response = await _client.PutAsJsonAsync(
+            $"/api/organizations/{scenario.Owner.OrganizationId}" +
+            $"/tickets/{ticket.Id}/assignment",
+            new ChangeTicketAssignmentRequest
+            {
+                TechnicianId = technician.UserId,
+                Reason = "Próba samodzielnego przydziału.",
+                ExpectedVersion = ticket.Version
+            });
+
+        Assert.Equal(HttpStatusCode.Forbidden, response.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var stored = await db.Tickets
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == ticket.Id);
+
+        Assert.Null(stored.AssignedTechnicianId);
+    }
+    [Fact]
+    public async Task Assignment_RejectsForeignTechnician_AndStaleVersion()
+    {
+        //test sprawdzający czy przydzielenie serwisanta z innej organizacji jest odrzucane, a także czy próba usunięcia przydziału ze starą wersją zgłoszenia jest odrzucana
+        var scenario = await CreateTicketScenarioAsync();
+
+        var foreignOwner = await RegisterAndLoginAsync();
+        var foreignTechnician = await RegisterAndLoginAsync();
+        var localTechnician = await RegisterAndLoginAsync();
+
+        await AddTechnicianAsync(foreignOwner, foreignTechnician);
+        await AddTechnicianAsync(scenario.Owner, localTechnician);
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var url =
+            $"/api/organizations/{scenario.Owner.OrganizationId}" +
+            $"/tickets/{ticket.Id}/assignment";
+
+        var foreignAssignment = await _client.PutAsJsonAsync(
+            url,
+            new ChangeTicketAssignmentRequest
+            {
+                TechnicianId = foreignTechnician.UserId,
+                Reason = "Niedozwolony przydział.",
+                ExpectedVersion = ticket.Version
+            });
+
+        Assert.Equal(
+            HttpStatusCode.BadRequest,
+            foreignAssignment.StatusCode);
+
+        var problem = await ReadAsync<ApiProblemResponse>(foreignAssignment);
+
+        Assert.Equal("technician_not_available", problem.Code);
+
+        var validAssignment = await _client.PutAsJsonAsync(
+            url,
+            new ChangeTicketAssignmentRequest
+            {
+                TechnicianId = localTechnician.UserId,
+                Reason = "Prawidłowy przydział.",
+                ExpectedVersion = ticket.Version
+            });
+
+        Assert.Equal(HttpStatusCode.OK, validAssignment.StatusCode);
+
+        var staleRemoval = await _client.PutAsJsonAsync(
+            url,
+            new ChangeTicketAssignmentRequest
+            {
+                TechnicianId = null,
+                Reason = "Próba ze starą wersją.",
+                ExpectedVersion = ticket.Version
+            });
+
+        Assert.Equal(HttpStatusCode.Conflict, staleRemoval.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+
+        var db = scope.ServiceProvider.GetRequiredService<AppDbContext>();
+
+        var stored = await db.Tickets
+            .AsNoTracking()
+            .SingleAsync(item => item.Id == ticket.Id);
+
+        Assert.Equal(localTechnician.UserId, stored.AssignedTechnicianId);
+
+        var historyCount = await db.TicketAssignmentHistories.CountAsync(
+            item => item.TicketId == ticket.Id);
+
+        Assert.Equal(1, historyCount);
+    }
+    [Fact]
+    public async Task Assignment_GrantsTechnicianAccess_AndRemovalRevokesIt()
+    {
+        //test sprawdzający czy przydzielenie serwisanta do zgłoszenia umożliwia mu dostęp do zgłoszenia, a usunięcie przydziału odbiera dostęp
+        var scenario = await CreateTicketScenarioAsync();
+        var technician = await RegisterAndLoginAsync();
+
+        await AddTechnicianAsync(scenario.Owner, technician);
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        UseToken(technician.Auth.AccessToken);
+
+        var beforeAssignment = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.NotFound, beforeAssignment.StatusCode);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var url =
+            $"/api/organizations/{scenario.Owner.OrganizationId}" +
+            $"/tickets/{ticket.Id}/assignment";
+
+        var assignmentResponse = await _client.PutAsJsonAsync(
+            url,
+            new ChangeTicketAssignmentRequest
+            {
+                TechnicianId = technician.UserId,
+                Reason = "Przydział testowy.",
+                ExpectedVersion = ticket.Version
+            });
+
+        Assert.Equal(HttpStatusCode.OK, assignmentResponse.StatusCode);
+
+        var assigned = await ReadAsync<TicketResponse>(assignmentResponse);
+
+        Assert.Equal(technician.UserId, assigned.AssignedTechnicianId);
+        Assert.Equal(ticket.Version + 1, assigned.Version);
+
+        UseToken(technician.Auth.AccessToken);
+
+        var details = await _client.GetAsync($"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.OK, details.StatusCode);
+
+        var comment = await _client.PostAsJsonAsync(
+            $"/api/tickets/{ticket.Id}/comments",
+            new CreateTicketCommentRequest
+            {
+                Content = "Prace wykonane."
+            });
+
+        Assert.Equal(HttpStatusCode.Created, comment.StatusCode);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var removal = await _client.PutAsJsonAsync(
+            url,
+            new ChangeTicketAssignmentRequest
+            {
+                TechnicianId = null,
+                Reason = "Usunięcie przydziału.",
+                ExpectedVersion = assigned.Version
+            });
+
+        Assert.Equal(HttpStatusCode.OK, removal.StatusCode);
+
+        var historyResponse = await _client.GetAsync(
+            $"/api/organizations/{scenario.Owner.OrganizationId}" +
+            $"/tickets/{ticket.Id}/assignment-history");
+
+        Assert.Equal(HttpStatusCode.OK, historyResponse.StatusCode);
+
+        var history =
+            await ReadAsync<PagedResponse<TicketAssignmentHistoryResponse>>(
+                historyResponse);
+
+        Assert.Equal(2, history.TotalCount);
+
+        Assert.Contains(history.Items, item =>
+            item.PreviousTechnicianId == null &&
+            item.NewTechnicianId == technician.UserId &&
+            item.ChangedByUserId == scenario.Owner.UserId);
+
+        Assert.Contains(history.Items, item =>
+            item.PreviousTechnicianId == technician.UserId &&
+            item.NewTechnicianId == null);
+
+        UseToken(technician.Auth.AccessToken);
+
+        var afterRemoval = await _client.GetAsync(
+            $"/api/tickets/{ticket.Id}");
+
+        Assert.Equal(HttpStatusCode.NotFound, afterRemoval.StatusCode);
+
+        var deniedComment = await _client.PostAsJsonAsync(
+            $"/api/tickets/{ticket.Id}/comments",
+            new CreateTicketCommentRequest
+            {
+                Content = "Ten komentarz nie powinien zostać zapisany."
+            });
+
+        Assert.Equal(HttpStatusCode.NotFound, deniedComment.StatusCode);
     }
     [Fact]
     public async Task UnexpectedException_ReturnsSafeProblemDetails()

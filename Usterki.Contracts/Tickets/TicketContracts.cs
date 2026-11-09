@@ -33,7 +33,9 @@ public sealed record TicketResponse(
     string Category,
     string Status,
     DateTime CreatedAtUtc,
-    long Version);
+    long Version, 
+    Guid? AssignedTechnicianId);
+
 public sealed class ChangeTicketStatusRequest
 {
     [Required, StringLength(30)]
@@ -71,3 +73,23 @@ public sealed record TicketCommentResponse(
 public sealed record TicketCategoryResponse(
     string Code,
     string Name);
+
+public sealed class ChangeTicketAssignmentRequest
+{
+    //null to odpięcie technika
+    public Guid? TechnicianId { get; set; }
+
+    [Required, StringLength(1000)]
+    public string Reason { get; set; } = string.Empty;
+
+    [Range(1, long.MaxValue)]
+    public long ExpectedVersion { get; set; }
+}
+
+public sealed record TicketAssignmentHistoryResponse(
+    Guid Id,
+    Guid? PreviousTechnicianId,
+    Guid? NewTechnicianId,
+    Guid ChangedByUserId,
+    string Reason,
+    DateTime ChangedAtUtc);

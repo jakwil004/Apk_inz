@@ -262,6 +262,9 @@ namespace Usterki.Infrastructure.Persistence.Migrations
                         .ValueGeneratedOnAdd()
                         .HasColumnType("uuid");
 
+                    b.Property<Guid?>("AssignedTechnicianId")
+                        .HasColumnType("uuid");
+
                     b.Property<string>("Category")
                         .IsRequired()
                         .HasMaxLength(30)
@@ -302,11 +305,52 @@ namespace Usterki.Infrastructure.Persistence.Migrations
 
                     b.HasKey("Id");
 
+                    b.HasIndex("AssignedTechnicianId", "CreatedAtUtc");
+
                     b.HasIndex("ReporterId", "CreatedAtUtc");
 
                     b.HasIndex("UnitId", "CreatedAtUtc");
 
                     b.ToTable("Tickets", (string)null);
+                });
+
+            modelBuilder.Entity("Usterki.Domain.Entities.TicketAssignmentHistory", b =>
+                {
+                    b.Property<Guid>("Id")
+                        .ValueGeneratedOnAdd()
+                        .HasColumnType("uuid");
+
+                    b.Property<DateTime>("ChangedAtUtc")
+                        .HasColumnType("timestamp with time zone");
+
+                    b.Property<Guid>("ChangedByUserId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("NewTechnicianId")
+                        .HasColumnType("uuid");
+
+                    b.Property<Guid?>("PreviousTechnicianId")
+                        .HasColumnType("uuid");
+
+                    b.Property<string>("Reason")
+                        .IsRequired()
+                        .HasMaxLength(1000)
+                        .HasColumnType("character varying(1000)");
+
+                    b.Property<Guid>("TicketId")
+                        .HasColumnType("uuid");
+
+                    b.HasKey("Id");
+
+                    b.HasIndex("ChangedByUserId");
+
+                    b.HasIndex("NewTechnicianId");
+
+                    b.HasIndex("PreviousTechnicianId");
+
+                    b.HasIndex("TicketId", "ChangedAtUtc");
+
+                    b.ToTable("TicketAssignmentHistories", (string)null);
                 });
 
             modelBuilder.Entity("Usterki.Domain.Entities.TicketComment", b =>
@@ -616,6 +660,11 @@ namespace Usterki.Infrastructure.Persistence.Migrations
                 {
                     b.HasOne("Usterki.Infrastructure.Identity.ApplicationUser", null)
                         .WithMany()
+                        .HasForeignKey("AssignedTechnicianId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Usterki.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
                         .HasForeignKey("ReporterId")
                         .OnDelete(DeleteBehavior.Restrict)
                         .IsRequired();
@@ -627,6 +676,33 @@ namespace Usterki.Infrastructure.Persistence.Migrations
                         .IsRequired();
 
                     b.Navigation("Unit");
+                });
+
+            modelBuilder.Entity("Usterki.Domain.Entities.TicketAssignmentHistory", b =>
+                {
+                    b.HasOne("Usterki.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("ChangedByUserId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.HasOne("Usterki.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("NewTechnicianId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Usterki.Infrastructure.Identity.ApplicationUser", null)
+                        .WithMany()
+                        .HasForeignKey("PreviousTechnicianId")
+                        .OnDelete(DeleteBehavior.Restrict);
+
+                    b.HasOne("Usterki.Domain.Entities.Ticket", "Ticket")
+                        .WithMany()
+                        .HasForeignKey("TicketId")
+                        .OnDelete(DeleteBehavior.Restrict)
+                        .IsRequired();
+
+                    b.Navigation("Ticket");
                 });
 
             modelBuilder.Entity("Usterki.Domain.Entities.TicketComment", b =>
