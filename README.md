@@ -48,7 +48,7 @@ Zadania do realizacji:
 - [x] Paginacja list.
 - [x] Dokumentacja API w formacie OpenAPI.
 - [x] Testy integracyjne backendu.
-- [ ] Przydzielanie serwisantów do zgłoszeń.
+- [x] Przydzielanie serwisantów do zgłoszeń.
 - [ ] Przesyłanie zdjęć i bezpieczny dostęp do załączników.
 - [ ] Aplikacja mobilna .NET MAUI Blazor Hybrid.
 - [ ] Wykonywanie zdjęć natywnym aparatem telefonu.
