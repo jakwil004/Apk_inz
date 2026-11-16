@@ -12,6 +12,10 @@ using Usterki.Domain.Entities;
 using Usterki.Domain.Enums;
 using Usterki.Domain.Rules;
 using Usterki.Infrastructure.Persistence;
+using Microsoft.AspNetCore.RateLimiting;
+using Usterki.Api.Models;
+using Usterki.Infrastructure.Photos;
+using Usterki.Infrastructure.Storage;
 
 namespace Usterki.Api.Controllers;
 
@@ -53,7 +57,314 @@ public sealed class TicketsController : ControllerBase
                 "Inne")
         });
     }
+    [HttpPost("tickets/{ticketId:guid}/photos")]
+    [Consumes("multipart/form-data")]
+    [EnableRateLimiting("photo-upload")]
+    [RequestSizeLimit(11 * 1024 * 1024)]
+    [RequestFormLimits(MultipartBodyLengthLimit = 11 * 1024 * 1024)]
+    public async Task<IActionResult> UploadPhoto(
+    Guid ticketId,
+    [FromForm] UploadTicketPhotoRequest request,
+    [FromServices] PhotoProcessor processor,
+    [FromServices] IPhotoStorage storage,
+    [FromServices] ILogger<TicketsController> logger,
+    CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Unauthorized();
+        }
 
+        var ticket = await VisibleTickets(userId)
+            .AsTracking()
+            .SingleOrDefaultAsync(
+                item => item.Id == ticketId,
+                cancellationToken);
+
+        if (ticket is null)
+        {
+            return NotFound();
+        }
+
+        if (request.File.Length <= 0 ||
+            request.File.Length > PhotoProcessor.MaxUploadBytes)
+        {
+            return BadRequest(ApiErrors.Create(
+                HttpContext,
+                StatusCodes.Status400BadRequest,
+                "invalid_photo_size",
+                "Zdjęcie musi mieć od 1 bajta do 10 MiB."));
+        }
+
+        var count = await _db.TicketPhotos.CountAsync(
+            photo => photo.TicketId == ticketId,
+            cancellationToken);
+
+        if (count >= 10)
+        {
+            return Conflict(ApiErrors.Create(
+                HttpContext,
+                StatusCodes.Status409Conflict,
+                "photo_limit_reached",
+                "Zgłoszenie może mieć maksymalnie 10 zdjęć."));
+        }
+
+        ProcessedPhoto processed;
+
+        try
+        {
+            using var buffer = new MemoryStream();
+
+            await request.File.CopyToAsync(
+                buffer,
+                cancellationToken);
+
+            cancellationToken.ThrowIfCancellationRequested();
+
+            processed = processor.Process(buffer.ToArray());
+
+            cancellationToken.ThrowIfCancellationRequested();
+        }
+        catch (PhotoValidationException exception)
+        {
+            return BadRequest(ApiErrors.Create(
+                HttpContext,
+                StatusCodes.Status400BadRequest,
+                "invalid_photo",
+                exception.Message));
+        }
+
+        var storageId = await storage.SaveAsync(
+            processed.Content,
+            cancellationToken);
+
+        var photo = new TicketPhoto
+        {
+            TicketId = ticketId,
+            UploadedByUserId = userId,
+            StorageId = storageId,
+            ContentType = processed.ContentType,
+            SizeBytes = processed.Content.LongLength,
+            Width = processed.Width,
+            Height = processed.Height,
+            CreatedAtUtc = DateTime.UtcNow
+        };
+
+        _db.TicketPhotos.Add(photo);
+
+        //zwiększamy wersję zgłoszenia, aby wykryć konflikt przy równoczesnym dodawaniu zdjęć
+        ticket.Version++;
+
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            await TryDeletePhotoFileAsync(storage, storageId, logger);
+
+            return Conflict(ApiErrors.Create(
+                HttpContext,
+                StatusCodes.Status409Conflict,
+                "ticket_version_conflict",
+                "Zgłoszenie zostało zmienione. Ponów dodanie zdjęcia."));
+        }
+        catch (Exception exception)
+        {
+            
+            logger.LogError(
+                exception,
+                "Nie udało się potwierdzić zapisu zdjęcia. " +
+                "StorageId: {StorageId}, TicketId: {TicketId}",
+                storageId,
+                ticketId);
+
+            throw;
+        }
+
+        var response = new TicketPhotoResponse(
+            photo.Id,
+            photo.TicketId,
+            photo.UploadedByUserId,
+            photo.ContentType,
+            photo.SizeBytes,
+            photo.Width,
+            photo.Height,
+            photo.CreatedAtUtc);
+
+        return CreatedAtAction(
+            nameof(DownloadPhoto),
+            new { ticketId, photoId = photo.Id },
+            response);
+    }
+    [HttpGet("tickets/{ticketId:guid}/photos")]
+    public async Task<IActionResult> GetPhotos(
+    Guid ticketId,
+    CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var canRead = await VisibleTickets(userId)
+            .AnyAsync(
+                ticket => ticket.Id == ticketId,
+                cancellationToken);
+
+        if (!canRead)
+        {
+            return NotFound();
+        }
+
+        var photos = await _db.TicketPhotos
+            .AsNoTracking()
+            .Where(photo => photo.TicketId == ticketId)
+            .OrderBy(photo => photo.CreatedAtUtc)
+            .ThenBy(photo => photo.Id)
+            .Select(photo => new TicketPhotoResponse(
+                photo.Id,
+                photo.TicketId,
+                photo.UploadedByUserId,
+                photo.ContentType,
+                photo.SizeBytes,
+                photo.Width,
+                photo.Height,
+                photo.CreatedAtUtc))
+            .ToListAsync(cancellationToken);
+
+        return Ok(photos);
+    }
+    [HttpGet("tickets/{ticketId:guid}/photos/{photoId:guid}")]
+    public async Task<IActionResult> DownloadPhoto(
+    Guid ticketId,
+    Guid photoId,
+    [FromServices] IPhotoStorage storage,
+    CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var canRead = await VisibleTickets(userId)
+            .AnyAsync(
+                ticket => ticket.Id == ticketId,
+                cancellationToken);
+
+        if (!canRead)
+        {
+            return NotFound();
+        }
+
+        var photo = await _db.TicketPhotos
+            .AsNoTracking()
+            .SingleOrDefaultAsync(
+                item => item.Id == photoId &&
+                        item.TicketId == ticketId,
+                cancellationToken);
+
+        if (photo is null)
+        {
+            return NotFound();
+        }
+
+        var stream = await storage.OpenReadAsync(
+            photo.StorageId,
+            cancellationToken);
+
+        if (stream is null)
+        {
+            return NotFound();
+        }
+
+        Response.Headers["Cache-Control"] = "no-store";
+        Response.Headers["X-Content-Type-Options"] = "nosniff";
+
+       
+        return File(
+            stream,
+            photo.ContentType,
+            $"photo-{photo.Id:N}.jpg",
+            enableRangeProcessing: false);
+    }
+    [HttpDelete("tickets/{ticketId:guid}/photos/{photoId:guid}")]
+    public async Task<IActionResult> DeletePhoto(
+    Guid ticketId,
+    Guid photoId,
+    [FromServices] IPhotoStorage storage,
+    [FromServices] ILogger<TicketsController> logger,
+    CancellationToken cancellationToken)
+    {
+        if (!TryGetUserId(out var userId))
+        {
+            return Unauthorized();
+        }
+
+        var ticket = await VisibleTickets(userId)
+            .AsTracking()
+            .SingleOrDefaultAsync(
+                item => item.Id == ticketId,
+                cancellationToken);
+
+        if (ticket is null)
+        {
+            return NotFound();
+        }
+
+        var photo = await _db.TicketPhotos
+            .SingleOrDefaultAsync(
+                item => item.Id == photoId &&
+                        item.TicketId == ticketId,
+                cancellationToken);
+
+        if (photo is null)
+        {
+            return NotFound();
+        }
+
+        var organizationId = await _db.Units
+            .Where(unit => unit.Id == ticket.UnitId)
+            .Select(unit => unit.Building.OrganizationId)
+            .SingleAsync(cancellationToken);
+
+        var isManager = await _db.OrganizationMemberships.AnyAsync(
+            membership =>
+                membership.OrganizationId == organizationId &&
+                membership.UserId == userId &&
+                membership.IsActive &&
+                (membership.Role == OrganizationRole.Owner ||
+                 membership.Role == OrganizationRole.Manager),
+            cancellationToken);
+
+        if (photo.UploadedByUserId != userId && !isManager)
+        {
+            return Forbid();
+        }
+
+        _db.TicketPhotos.Remove(photo);
+        ticket.Version++;
+
+        try
+        {
+            await _db.SaveChangesAsync(cancellationToken);
+        }
+        catch (DbUpdateConcurrencyException)
+        {
+            return Conflict(ApiErrors.Create(
+                HttpContext,
+                StatusCodes.Status409Conflict,
+                "ticket_version_conflict",
+                "Zgłoszenie zostało zmienione. Ponów usunięcie zdjęcia."));
+        }
+
+        await TryDeletePhotoFileAsync(
+            storage,
+            photo.StorageId,
+            logger);
+
+        return NoContent();
+    }
     [HttpPost("units/{unitId:guid}/tickets")]
     public async Task<ActionResult<TicketResponse>> Create(
         Guid unitId,
@@ -695,6 +1006,25 @@ public sealed class TicketsController : ControllerBase
             JwtRegisteredClaimNames.Sub)?.Value;
 
         return Guid.TryParse(subject, out userId);
+    }
+    private static async Task TryDeletePhotoFileAsync(
+    IPhotoStorage storage,
+    Guid storageId,
+    ILogger logger)
+    {
+        try
+        {
+            await storage.DeleteAsync(
+                storageId,
+                CancellationToken.None);
+        }
+        catch (Exception exception)
+        {
+            logger.LogError(
+                exception,
+                "Nie udało się usunąć pliku zdjęcia {StorageId}.",
+                storageId);
+        }
     }
 
     private static readonly Expression<Func<Ticket, TicketResponse>>

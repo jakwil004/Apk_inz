@@ -1265,6 +1265,86 @@ public sealed class SecurityIntegrationTests : IDisposable
         Assert.Equal(HttpStatusCode.BadRequest, secondAccept.StatusCode);
     }
     [Fact]
+    public async Task Photo_ForeignOwnerCannotReadOrDelete()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        var foreignOwner = await RegisterAndLoginAsync();
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        using var bitmap = new SkiaSharp.SKBitmap(20, 20);
+        bitmap.Erase(SkiaSharp.SKColors.Blue);
+
+        using var image = SkiaSharp.SKImage.FromBitmap(bitmap);
+        using var encoded = image.Encode(
+            SkiaSharp.SKEncodedImageFormat.Png,
+            100);
+
+        using var form = new MultipartFormDataContent();
+
+        var fileContent = new ByteArrayContent(encoded.ToArray());
+
+        fileContent.Headers.ContentType =
+            new System.Net.Http.Headers.MediaTypeHeaderValue(
+                "image/png");
+
+        form.Add(fileContent, "File", "test.png");
+
+        var upload = await _client.PostAsync(
+            $"/api/tickets/{ticket.Id}/photos",
+            form);
+
+        Assert.Equal(
+            System.Net.HttpStatusCode.Created,
+            upload.StatusCode);
+
+        var photo = await ReadAsync<TicketPhotoResponse>(upload);
+
+        var photoUrl =
+            $"/api/tickets/{ticket.Id}/photos/{photo.Id}";
+
+        try
+        {
+            UseToken(foreignOwner.Auth.AccessToken);
+
+            var download = await _client.GetAsync(photoUrl);
+
+            Assert.Equal(
+                System.Net.HttpStatusCode.NotFound,
+                download.StatusCode);
+
+            var delete = await _client.DeleteAsync(photoUrl);
+
+            Assert.Equal(
+                System.Net.HttpStatusCode.NotFound,
+                delete.StatusCode);
+
+            //nieudana próba nie usunęła zdjęcia
+            UseToken(scenario.Resident.Auth.AccessToken);
+
+            var ownDownload = await _client.GetAsync(photoUrl);
+
+            Assert.Equal(
+                System.Net.HttpStatusCode.OK,
+                ownDownload.StatusCode);
+
+            Assert.Equal(
+                "image/jpeg",
+                ownDownload.Content.Headers.ContentType?.MediaType);
+        }
+        finally
+        {
+            UseToken(scenario.Resident.Auth.AccessToken);
+
+            await _client.DeleteAsync(photoUrl);
+        }
+    }
+    [Fact]
     public async Task MissingJwt_ReturnsProblemDetails_AndBearerChallenge()
     {//brak tokenu JWT w nagłówku autoryzacji
         _client.DefaultRequestHeaders.Authorization = null;

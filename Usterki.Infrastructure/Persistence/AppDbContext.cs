@@ -27,6 +27,7 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
     public DbSet<Ticket> Tickets => Set<Ticket>();
     public DbSet<TicketStatusHistory> TicketStatusHistories => Set<TicketStatusHistory>();
     public DbSet<TicketComment> TicketComments => Set<TicketComment>();
+    public DbSet<TicketPhoto> TicketPhotos => Set<TicketPhoto>();
     public DbSet<TicketAssignmentHistory> TicketAssignmentHistories => Set<TicketAssignmentHistory>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
@@ -48,6 +49,33 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
             entity.HasIndex(x => x.NormalizedEmail)
                 .HasDatabaseName("EmailIndex")
                 .IsUnique();
+        });
+        modelBuilder.Entity<TicketPhoto>(entity =>
+        {
+            entity.HasKey(photo => photo.Id);
+
+            entity.Property(photo => photo.ContentType)
+                .HasMaxLength(50)
+                .IsRequired();
+
+            entity.HasIndex(photo => photo.StorageId)
+                .IsUnique();
+
+            entity.HasIndex(photo => new
+            {
+                photo.TicketId,
+                photo.CreatedAtUtc
+            });
+
+            entity.HasOne(photo => photo.Ticket)
+                .WithMany()
+                .HasForeignKey(photo => photo.TicketId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(photo => photo.UploadedByUserId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
         modelBuilder.Entity<TicketAssignmentHistory>(entity =>
         {

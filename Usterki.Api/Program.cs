@@ -14,6 +14,8 @@ using Microsoft.AspNetCore.Mvc;
 using Usterki.Api.Errors;
 using Microsoft.OpenApi;
 using Usterki.Contracts.Common;
+using Usterki.Infrastructure.Storage;
+using Usterki.Infrastructure.Photos;
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -318,11 +320,34 @@ builder.Services.AddRateLimiter(options =>
         limiter.QueueLimit = 0;
         limiter.AutoReplenishment = true;
     });
+    options.AddConcurrencyLimiter("photo-upload", limiter =>
+    {
+        limiter.PermitLimit = 2;
+        limiter.QueueLimit = 0;
+    });
 });
 
 builder.Services.AddScoped<
     IAuthorizationHandler,
     OrganizationRoleHandler>();
+
+builder.Services.AddSingleton<IPhotoStorage>(_ =>
+{
+    var configuredPath =
+        builder.Configuration["PhotoStorage:RootPath"];
+
+    var rootPath = string.IsNullOrWhiteSpace(configuredPath)
+        ? Path.Combine(
+            Environment.GetFolderPath(
+                Environment.SpecialFolder.LocalApplicationData),
+            "Usterki",
+            builder.Environment.EnvironmentName,
+            "TicketPhotos")
+        : configuredPath;
+
+    return new LocalPhotoStorage(rootPath);
+});
+builder.Services.AddSingleton<PhotoProcessor>();
 
 var app = builder.Build();
 
