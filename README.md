@@ -6,7 +6,7 @@ Projekt i implementacja aplikacji mobilnej i panelu administracyjnego do zgłasz
 
 Design and implementation of a mobile application and an administrative panel for reporting and managing faults in buildings.
 
-> Projekt w trakcie implementacji backendu (około 80% gotowe).
+> Projekt w trakcie implementacji backendu (około 90% gotowe).
 > Następny etap implementacji - aplikacja mobilna
 
 ## Cel projektu
@@ -49,7 +49,7 @@ Zadania do realizacji:
 - [x] Dokumentacja API w formacie OpenAPI.
 - [x] Testy integracyjne backendu.
 - [x] Przydzielanie serwisantów do zgłoszeń.
-- [ ] Przesyłanie zdjęć i bezpieczny dostęp do załączników.
+- [x] Przesyłanie zdjęć i bezpieczny dostęp do załączników.
 - [ ] Aplikacja mobilna .NET MAUI Blazor Hybrid.
 - [ ] Wykonywanie zdjęć natywnym aparatem telefonu.
 - [ ] Panel administracyjny w Blazor.
