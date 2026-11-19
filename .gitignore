@@ -139,6 +139,10 @@ _TeamCity*
 # DotCover is a Code Coverage Tool
 *.dotCover
 
+# Server-side Firebase credentials
+**/firebase-admin*.json
+**/*firebase-adminsdk*.json
+
 # AxoCover is a Code Coverage Tool
 .axoCover/*
 !.axoCover/settings.json

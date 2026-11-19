@@ -53,8 +53,8 @@ Zadania do realizacji:
 - [ ] Aplikacja mobilna .NET MAUI Blazor Hybrid.
 - [ ] Wykonywanie zdjęć natywnym aparatem telefonu.
 - [ ] Panel administracyjny w Blazor.
-- [ ] Rozbudowane filtrowanie zgłoszeń.
-- [ ] Powiadomienia push.
+- [x] Rozbudowane filtrowanie zgłoszeń.
+- [x] Powiadomienia push.
 - [ ] Eksport zgłoszeń do CSV i PDF.
 - [ ] Rozszerzenie testów bezpieczeństwa i testów klientów.
 - [ ] Dokumentacja wdrożenia.

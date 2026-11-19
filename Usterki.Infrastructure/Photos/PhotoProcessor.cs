@@ -114,8 +114,15 @@ public sealed class PhotoProcessor
                 width,
                 height);
 
-            canvas.Concat(ref matrix);
-            canvas.DrawBitmap(decoded, 0, 0);
+            canvas.Concat(in matrix);
+
+            canvas.DrawBitmap(
+                decoded,
+                0,
+                0,
+                new SKSamplingOptions(
+                    SKFilterMode.Linear,
+                    SKMipmapMode.None));
             canvas.Flush();
         }
 

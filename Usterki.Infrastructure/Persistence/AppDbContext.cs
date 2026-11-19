@@ -29,6 +29,9 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
     public DbSet<TicketComment> TicketComments => Set<TicketComment>();
     public DbSet<TicketPhoto> TicketPhotos => Set<TicketPhoto>();
     public DbSet<TicketAssignmentHistory> TicketAssignmentHistories => Set<TicketAssignmentHistory>();
+    public DbSet<UserNotification> UserNotifications=> Set<UserNotification>();
+    public DbSet<NotificationPushMessage> NotificationPushMessages=> Set<NotificationPushMessage>();
+    public DbSet<PushDevice> PushDevices => Set<PushDevice>();
     protected override void OnModelCreating(ModelBuilder modelBuilder)
     {
         base.OnModelCreating(modelBuilder);
@@ -394,6 +397,100 @@ public class AppDbContext : IdentityUserContext<ApplicationUser, Guid>
                 .WithMany(x => x.RefreshTokens)
                 .HasForeignKey(x => x.SessionId)
                 .OnDelete(DeleteBehavior.Cascade);
+        });
+        modelBuilder.Entity<UserNotification>(entity =>
+        {
+            entity.HasKey(notification => notification.Id);
+
+            entity.Property(notification => notification.Type)
+                .HasConversion<string>()
+                .HasMaxLength(50);
+
+            entity.Property(notification => notification.Message)
+                .HasMaxLength(300)
+                .IsRequired();
+
+            entity.HasIndex(notification => new
+            {
+                notification.EventId,
+                notification.RecipientUserId
+            }).IsUnique();
+
+            entity.HasIndex(notification => new
+            {
+                notification.RecipientUserId,
+                notification.CreatedAtUtc
+            });
+
+            entity.HasIndex(notification => new
+            {
+                notification.RecipientUserId,
+                notification.ReadAtUtc
+            });
+
+            entity.HasOne(notification => notification.Ticket)
+                .WithMany()
+                .HasForeignKey(notification => notification.TicketId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(notification => notification.RecipientUserId)
+                .OnDelete(DeleteBehavior.Restrict);
+        });
+
+        modelBuilder.Entity<NotificationPushMessage>(entity =>
+        {
+            entity.HasKey(message => message.Id);
+
+            entity.HasIndex(message => message.NotificationId)
+                .IsUnique();
+
+            entity.Property(message => message.CompletionReason)
+                .HasMaxLength(50);
+
+            entity.HasIndex(message => new
+            {
+                message.ProcessedAtUtc,
+                message.NextAttemptAtUtc
+            });
+
+            entity.HasOne(message => message.Notification)
+                .WithOne()
+                .HasForeignKey<NotificationPushMessage>(
+                    message => message.NotificationId)
+                .OnDelete(DeleteBehavior.Cascade);
+        });
+
+        modelBuilder.Entity<PushDevice>(entity =>
+        {
+            entity.HasKey(device => device.Id);
+
+            entity.Property(device => device.FirebaseInstallationId)
+                .HasMaxLength(200)
+                .IsRequired();
+
+            entity.HasIndex(device => device.FirebaseInstallationId)
+                .IsUnique();
+
+            entity.HasIndex(device => new
+            {
+                device.UserId,
+                device.IsActive
+            });
+
+            entity.Property(device => device.Version)
+                .IsConcurrencyToken();
+
+            entity.HasOne<ApplicationUser>()
+                .WithMany()
+                .HasForeignKey(device => device.UserId)
+                .OnDelete(DeleteBehavior.Restrict);
+
+            entity.HasOne<UserSession>()
+                .WithMany()
+                .HasForeignKey(device => device.SessionId)
+                .OnDelete(DeleteBehavior.Restrict);
         });
     }
 }

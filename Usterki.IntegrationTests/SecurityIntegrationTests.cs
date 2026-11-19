@@ -5,20 +5,23 @@ using System.Net.Http.Headers;
 using System.Net.Http.Json;
 using System.Text;
 using Microsoft.AspNetCore.Mvc.Testing;
+using Microsoft.AspNetCore.TestHost;
 using Microsoft.EntityFrameworkCore;
 using Microsoft.Extensions.DependencyInjection;
 using Usterki.Contracts.Auth;
 using Usterki.Contracts.Common;
+using Usterki.Contracts.Notifications;
 using Usterki.Contracts.Properties;
 using Usterki.Contracts.Residents;
+using Usterki.Contracts.Technicians;
 using Usterki.Contracts.Tickets;
 using Usterki.Domain.Entities;
 using Usterki.Domain.Enums;
+using Usterki.Infrastructure.Notifications;
 using Usterki.Infrastructure.Persistence;
 using Usterki.IntegrationTests.Infrastructure;
-using Microsoft.AspNetCore.TestHost;
-using Usterki.Contracts.Technicians;
 using Xunit;
+
 
 namespace Usterki.IntegrationTests;
 
@@ -28,7 +31,20 @@ public sealed class SecurityIntegrationTests : IDisposable
 
     private readonly TestApiFactory _factory;
     private readonly HttpClient _client;
+    private sealed class RecordingPushSender : IPushSender
+    {
+        public List<Guid> SentNotifications { get; } = [];
 
+        public Task<PushSendResult> SendAsync(
+            string firebaseInstallationId,
+            Guid notificationId,
+            CancellationToken cancellationToken)
+        {
+            SentNotifications.Add(notificationId);
+
+            return Task.FromResult(PushSendResult.Accepted);
+        }
+    }
     public SecurityIntegrationTests()
     {
 
@@ -55,6 +71,7 @@ public sealed class SecurityIntegrationTests : IDisposable
 
         return await ReadAsync<TicketResponse>(response);
     }
+
     private async Task AddTechnicianAsync(
     TestOwner owner,
     TestOwner technician)
@@ -1415,6 +1432,157 @@ public sealed class SecurityIntegrationTests : IDisposable
         Assert.Equal("forbidden", problem.Code);
         Assert.False(string.IsNullOrWhiteSpace(problem.TraceId));
     }
+    [Fact]
+    public async Task Comment_CreatesNotification_ForOwnerButNotAuthor()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        var commentResponse = await _client.PostAsJsonAsync(
+            $"/api/tickets/{ticket.Id}/comments",
+            new CreateTicketCommentRequest
+            {
+                Content = "Proszę o sprawdzenie usterki."
+            });
+
+        Assert.Equal(
+            HttpStatusCode.Created,
+            commentResponse.StatusCode);
+
+        var residentResponse = await _client.GetAsync(
+            "/api/notifications");
+
+        Assert.Equal(HttpStatusCode.OK, residentResponse.StatusCode);
+
+        var residentPage =
+            await ReadAsync<PagedResponse<NotificationResponse>>(
+                residentResponse);
+
+        Assert.Empty(residentPage.Items);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var ownerResponse = await _client.GetAsync(
+            "/api/notifications");
+
+        Assert.Equal(HttpStatusCode.OK, ownerResponse.StatusCode);
+
+        var ownerPage =
+            await ReadAsync<PagedResponse<NotificationResponse>>(
+                ownerResponse);
+
+        var notification = Assert.Single(ownerPage.Items);
+
+        Assert.Equal(ticket.Id, notification.TicketId);
+        Assert.Equal("CommentAdded", notification.Type);
+        Assert.Null(notification.ReadAtUtc);
+
+        var countBeforeResponse = await _client.GetAsync(
+            "/api/notifications/unread-count");
+
+        var countBefore =
+            await ReadAsync<UnreadNotificationsCountResponse>(
+                countBeforeResponse);
+
+        Assert.Equal(1, countBefore.Count);
+
+        var markResponse = await _client.PatchAsync(
+            $"/api/notifications/{notification.Id}/read",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.NoContent, markResponse.StatusCode);
+
+        var repeatResponse = await _client.PatchAsync(
+            $"/api/notifications/{notification.Id}/read",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.NoContent, repeatResponse.StatusCode);
+
+        var countAfterResponse = await _client.GetAsync(
+            "/api/notifications/unread-count");
+
+        var countAfter =
+            await ReadAsync<UnreadNotificationsCountResponse>(
+                countAfterResponse);
+
+        Assert.Equal(0, countAfter.Count);
+
+        var afterResponse = await _client.GetAsync(
+            "/api/notifications");
+
+        var afterPage =
+            await ReadAsync<PagedResponse<NotificationResponse>>(
+                afterResponse);
+
+        Assert.NotNull(Assert.Single(afterPage.Items).ReadAtUtc);
+    }
+    [Fact]
+    public async Task Notification_ForeignOwnerCannotMarkAsRead()
+    {
+        var scenario = await CreateTicketScenarioAsync();
+        var foreignOwner = await RegisterAndLoginAsync();
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        var commentResponse = await _client.PostAsJsonAsync(
+            $"/api/tickets/{ticket.Id}/comments",
+            new CreateTicketCommentRequest
+            {
+                Content = "Nowa informacja o usterce."
+            });
+
+        Assert.Equal(
+            HttpStatusCode.Created,
+            commentResponse.StatusCode);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var ownerResponse = await _client.GetAsync(
+            "/api/notifications");
+
+        var ownerPage =
+            await ReadAsync<PagedResponse<NotificationResponse>>(
+                ownerResponse);
+
+        var notification = Assert.Single(ownerPage.Items);
+
+        UseToken(foreignOwner.Auth.AccessToken);
+
+        var foreignResponse = await _client.GetAsync(
+            "/api/notifications");
+
+        var foreignPage =
+            await ReadAsync<PagedResponse<NotificationResponse>>(
+                foreignResponse);
+
+        Assert.Empty(foreignPage.Items);
+
+        var markResponse = await _client.PatchAsync(
+            $"/api/notifications/{notification.Id}/read",
+            content: null);
+
+        Assert.Equal(HttpStatusCode.NotFound, markResponse.StatusCode);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var countResponse = await _client.GetAsync(
+            "/api/notifications/unread-count");
+
+        var count =
+            await ReadAsync<UnreadNotificationsCountResponse>(
+                countResponse);
+
+        Assert.Equal(1, count.Count);
+    }
 
     [Fact]
     public async Task Logout_RevokesOnlyCurrentSession()
@@ -1469,6 +1637,91 @@ public sealed class SecurityIntegrationTests : IDisposable
         Assert.Equal(
             HttpStatusCode.Unauthorized,
             firstSessionRefresh.StatusCode);
+    }
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Push_IsSentOnlyForActiveSession(
+    bool logoutBeforeProcessing)
+    {
+        var scenario = await CreateTicketScenarioAsync();
+
+        var ticket = await CreateTicketForAsync(
+            scenario.Resident,
+            scenario.Unit.Id);
+
+        UseToken(scenario.Owner.Auth.AccessToken);
+
+        var registerResponse = await _client.PutAsJsonAsync(
+            "/api/push-devices",
+            new RegisterPushDeviceRequest
+            {
+                FirebaseInstallationId =
+                    $"test-installation-{Guid.NewGuid():N}"
+            });
+
+        Assert.Equal(HttpStatusCode.OK, registerResponse.StatusCode);
+
+        if (logoutBeforeProcessing)
+        {
+            var logoutResponse = await _client.PostAsync(
+                "/api/auth/logout",
+                content: null);
+
+            logoutResponse.EnsureSuccessStatusCode();
+        }
+
+        UseToken(scenario.Resident.Auth.AccessToken);
+
+        var commentResponse = await _client.PostAsJsonAsync(
+            $"/api/tickets/{ticket.Id}/comments",
+            new CreateTicketCommentRequest
+            {
+                Content = "Aktualizacja zgłoszenia do testu push."
+            });
+
+        Assert.Equal(
+            HttpStatusCode.Created,
+            commentResponse.StatusCode);
+
+        using var scope = _factory.Services.CreateScope();
+
+        var db = scope.ServiceProvider
+            .GetRequiredService<AppDbContext>();
+
+        var queued = await db.NotificationPushMessages
+            .AsNoTracking()
+            .SingleAsync(message =>
+                message.Notification.TicketId == ticket.Id &&
+                message.Notification.RecipientUserId ==
+                    scenario.Owner.UserId);
+
+        var sender = new RecordingPushSender();
+
+        var processor = new PushOutboxProcessor(db, sender);
+
+        var processed = await processor.ProcessAsync(
+            queued.Id,
+            CancellationToken.None);
+
+        Assert.True(processed);
+
+        var saved = await db.NotificationPushMessages
+            .AsNoTracking()
+            .SingleAsync(message => message.Id == queued.Id);
+
+        Assert.NotNull(saved.ProcessedAtUtc);
+
+        if (logoutBeforeProcessing)
+        {
+            Assert.Empty(sender.SentNotifications);
+            Assert.Equal("NoActiveDevices", saved.CompletionReason);
+        }
+        else
+        {
+            Assert.Single(sender.SentNotifications);
+            Assert.Equal("AcceptedByFcm", saved.CompletionReason);
+        }
     }
 
     private async Task<TestOwner> RegisterAndLoginAsync()

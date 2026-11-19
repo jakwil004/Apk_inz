@@ -16,6 +16,12 @@ using Microsoft.OpenApi;
 using Usterki.Contracts.Common;
 using Usterki.Infrastructure.Storage;
 using Usterki.Infrastructure.Photos;
+using Usterki.Infrastructure.Notifications;
+using FirebaseAdmin;
+using FirebaseAdmin.Messaging;
+using Google.Apis.Auth.OAuth2;
+using Usterki.Api.BackgroundServices;
+
 
 var builder = WebApplication.CreateBuilder(args);
 
@@ -348,6 +354,25 @@ builder.Services.AddSingleton<IPhotoStorage>(_ =>
     return new LocalPhotoStorage(rootPath);
 });
 builder.Services.AddSingleton<PhotoProcessor>();
+builder.Services.AddScoped<TicketNotificationService>();
+
+builder.Services.AddSingleton<FirebaseApp>(_ =>
+    FirebaseApp.Create(
+        new AppOptions
+        {
+            Credential = GoogleCredential.GetApplicationDefault()
+        },
+        $"usterki-{Guid.NewGuid():N}"));
+
+builder.Services.AddSingleton<FirebaseMessaging>(services =>
+    FirebaseMessaging.GetMessaging(
+        services.GetRequiredService<FirebaseApp>()));
+
+builder.Services.AddSingleton<IPushSender, FirebasePushSender>();
+
+builder.Services.AddScoped<PushOutboxProcessor>();
+
+builder.Services.AddHostedService<PushWorker>();
 
 var app = builder.Build();
 

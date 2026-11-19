@@ -35,6 +35,14 @@ public sealed class TestApiFactory : WebApplicationFactory<Program>
     protected override void ConfigureWebHost(IWebHostBuilder builder)
     {
         builder.UseEnvironment("Testing");
+        builder.ConfigureAppConfiguration((context, configuration) =>
+        {
+            configuration.AddInMemoryCollection(
+                new Dictionary<string, string?>
+                {
+                    ["Push:Enabled"] = "false"
+                });
+        });
     }
 
     protected override IHost CreateHost(IHostBuilder builder)

@@ -16,7 +16,8 @@ using Microsoft.AspNetCore.RateLimiting;
 using Usterki.Api.Models;
 using Usterki.Infrastructure.Photos;
 using Usterki.Infrastructure.Storage;
-
+using Usterki.Infrastructure.Queries;
+using Usterki.Infrastructure.Notifications;
 namespace Usterki.Api.Controllers;
 
 [ApiController]
@@ -516,6 +517,7 @@ public sealed class TicketsController : ControllerBase
     public async Task<ActionResult<TicketCommentResponse>> AddComment(
     Guid ticketId,
     CreateTicketCommentRequest request,
+    [FromServices] TicketNotificationService notifications,
     CancellationToken cancellationToken)
     {
         if (!TryGetUserId(out var userId))
@@ -523,10 +525,12 @@ public sealed class TicketsController : ControllerBase
             return Unauthorized();
         }
 
-        var canRead = await VisibleTickets(userId)
-            .AnyAsync(ticket => ticket.Id == ticketId, cancellationToken);
+        var ticket = await VisibleTickets(userId)
+    .SingleOrDefaultAsync(
+        item => item.Id == ticketId,
+        cancellationToken);
 
-        if (!canRead)
+        if (ticket is null)
         {
             return NotFound();
         }
@@ -540,6 +544,7 @@ public sealed class TicketsController : ControllerBase
         };
 
         _db.TicketComments.Add(comment);
+        await notifications.StageAsync(ticket,userId,NotificationType.CommentAdded,cancellationToken);
         await _db.SaveChangesAsync(cancellationToken);
 
         var authorName = await _db.Users
@@ -643,6 +648,7 @@ public sealed class TicketsController : ControllerBase
     Guid organizationId,
     Guid ticketId,
     ChangeTicketStatusRequest request,
+    [FromServices] TicketNotificationService notifications,
     CancellationToken cancellationToken)
     {
         if (!TryGetUserId(out var userId))
@@ -708,6 +714,7 @@ public sealed class TicketsController : ControllerBase
         try
         {
             //jeden zapis histori i statusu
+            await notifications.StageAsync(ticket,userId,NotificationType.StatusChanged,cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
@@ -834,6 +841,7 @@ public sealed class TicketsController : ControllerBase
     Guid organizationId,
     Guid ticketId,
     ChangeTicketAssignmentRequest request,
+    [FromServices] TicketNotificationService notifications,
     CancellationToken cancellationToken)
     {
         if (!TryGetUserId(out var userId))
@@ -930,6 +938,7 @@ public sealed class TicketsController : ControllerBase
 
         try
         {
+            await notifications.StageAsync(ticket,userId,NotificationType.AssignmentChanged,cancellationToken);
             await _db.SaveChangesAsync(cancellationToken);
         }
         catch (DbUpdateConcurrencyException)
@@ -950,30 +959,7 @@ public sealed class TicketsController : ControllerBase
     {
         return _db.Tickets
             .AsNoTracking()
-            .Where(ticket =>
-                _db.OrganizationMemberships.Any(membership =>
-                    membership.UserId == userId &&
-                    membership.OrganizationId ==
-                        ticket.Unit.Building.OrganizationId &&
-                    membership.IsActive &&
-                    (
-                        membership.Role == OrganizationRole.Owner ||
-                        membership.Role == OrganizationRole.Manager ||
-
-                        (
-                            membership.Role == OrganizationRole.Technician &&
-                            ticket.AssignedTechnicianId == userId
-                        ) ||
-
-                        (
-                            membership.Role == OrganizationRole.Resident &&
-                            ticket.ReporterId == userId &&
-                            _db.UnitResidents.Any(assignment =>
-                                assignment.UnitId == ticket.UnitId &&
-                                assignment.UserId == userId &&
-                                assignment.IsActive)
-                        )
-                    )));
+            .VisibleTo(_db, userId);
     }
 
     private static async Task<PagedResponse<TicketResponse>> ToPageAsync(
